@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>管理用｜図面AR</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<main class="page">
+  <header class="page-head">
+    <h1>管理用</h1>
+    <p>図面を追加・差し替えたときに使います。処理はすべてこのブラウザの中で行います。</p>
+  </header>
+
+  <h2>1. 認識用データを作る</h2>
+  <p>台帳（<span class="mono">data/items.json</span>）に載っている図面画像をまとめて <span class="mono">all.mind</span> にします。できたファイルを <span class="mono">targets/all.mind</span> に置き換えてください。</p>
+  <p><button class="btn btn-primary" id="btn-compile" type="button">作成する</button> <a class="btn" id="link-download" hidden>all.mind を保存</a></p>
+  <p class="muted" id="compile-status"></p>
+  <table class="plain" id="compile-table" hidden>
+    <thead><tr><th>番号</th><th>資料</th><th>画像</th><th>検出用</th><th>追跡用</th><th>判定</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p class="muted">「検出用」「追跡用」は、画像の中で認識の手がかりになる点の数です。判定は追跡用の数による目安で、最終判断は印刷した紙と実機で行ってください。</p>
+
+  <h2>2. QRコード</h2>
+  <p>図面に刷るQRコードです。公開先のURLを入れてから保存・印刷してください。印刷後はURLを変えられません。</p>
+  <p><label>公開先のURL <input id="base-url" type="url" style="width:100%;min-height:44px;padding:0 10px;font:inherit;border:1px solid var(--ink);border-radius:4px;background:#fff"></label></p>
+  <div class="qr-grid" id="qr-grid"></div>
+
+  <p class="foot"><a href="../index.html">← 一覧へ</a></p>
+</main>
+<script src="../lib/qrcode.js"></script>
+<script type="module" src="tools.js"></script>
+</body>
+</html>

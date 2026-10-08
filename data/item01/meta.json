@@ -1,0 +1,16 @@
+{
+  "title": "資料01（試験用モデル）",
+  "fields": [
+    { "label": "遺跡名", "value": "" },
+    { "label": "所在地", "value": "" },
+    { "label": "遺構・遺物", "value": "" },
+    { "label": "時期", "value": "" },
+    { "label": "所蔵", "value": "" },
+    { "label": "図面の出典", "value": "" },
+    { "label": "3D計測", "value": "" },
+    { "label": "利用条件", "value": "" },
+    { "label": "元データ", "value": "320,334面／テクスチャ 8192px／16.2MB" },
+    { "label": "配信用", "value": "320,334面／テクスチャ 2048px／圧縮後 1.4MB" }
+  ],
+  "notice": ""
+}

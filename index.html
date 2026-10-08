@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>図面AR</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<main class="page">
+  <header class="page-head">
+    <h1 id="site-title">図面AR</h1>
+    <p id="site-lead"></p>
+  </header>
+
+  <div class="callout" id="inapp" hidden>このアプリ内の画面ではカメラが動かないことがあります。メニューから「Safariで開く」または「ブラウザで開く」を選んでください。</div>
+
+  <h2>使い方</h2>
+  <ol class="steps">
+    <li>「図面にかざす」を押し、カメラの使用を許可する。</li>
+    <li>紙の図面全体が画面に入るようにかざす。</li>
+    <li>モデルが出たら、横になぞって回す／2本指で拡大する。画面下の帯を押すと情報が開く。</li>
+  </ol>
+  <p><a class="btn btn-primary" href="ar.html">図面にかざす</a></p>
+
+  <h2>資料</h2>
+  <ul class="items" id="items"><li class="muted">読み込み中…</li></ul>
+
+  <footer class="foot">
+    three.js・MindAR・Draco を同梱しています（各ライセンスは <span class="mono">lib/</span> を参照）。
+    <a href="tools/">管理用ページ</a>
+  </footer>
+</main>
+<script type="module" src="js/index.js"></script>
+</body>
+</html>

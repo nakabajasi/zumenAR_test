@@ -9,16 +9,19 @@
 //   既定  追跡の処理の中で一度でも例外が出ると、処理全体が止まり、再読み込みするまで戻らない。
 //   変更  例外はそのコマだけの失敗として扱い、次のコマから探し直す。
 //
-// 図面の探し方は MindAR 既定（画面の一部を順に切り出して見る）のまま。画面全体を縮めて見る方法も
-// 用意したが、擬似映像での成功率は同じだったので既定にはしていない（detectMode で切り替えられる）。
+//   既定  図面を探す方法が正面に近い見え方を前提にしていて、斜めからだと見つからない。
+//   変更  映像を「図面と正対したらこう見える」形に直してから探す方法を交互に挟む（oblique.js）。
 import { Controller } from '../lib/mindar/mindar-image.prod.js';
+import { tiltTowardTop, tiltTowardSide, facing, planeTilt, planWindow, renderWindow, poseFromWindow } from './oblique.js';
 
 export const TRACKING_DEFAULTS = {
   minPoints: 6,        // 姿勢の更新に使う手がかりの最少数（MindAR既定は4。少ないと姿勢が暴れる）
   retryFrames: 8,      // 追跡に失敗しても、探し直しに戻らず粘るコマ数（MindAR既定は0）
   warmupTolerance: 2,  // 表示を始めるまでに必要な連続成功コマ数
   lostAfterMs: 800,    // 姿勢が得られない状態がこの時間（ミリ秒）続いたら「見失った」と判断する
-  detectMode: 0,       // 図面の探し方：0＝画面の一部を順に見る（MindAR既定）／1＝画面全体を縮めて見る／2＝交互
+  obliqueSearch: 1,    // 1＝斜めから見た図面も探す
+  searchTilts: [50, 65],   // 斜めの探索で仮定する傾き（度）。図面の奥側が画面の上に来る向き（机の上の図面）
+  searchSideTilts: [],     // 同上、奥側が画面の左右に来る向き（壁の図面を横から見る場合。例 [50]）
   stillCutoff: 0.5,    // 手を止めているときのならし方（Hz）。小さいほど揺れないが、動き出しが遅れる
   posFollow: 15,       // 位置：動きの速さに応じて追従を速める度合い
   rotFollow: 7,        // 向き：同上
@@ -33,38 +36,22 @@ export const TRACKING_DEFAULTS = {
 export const trackingStats = {
   frames: 0, fps: 0, points: 0, used: 0, minPointsSeen: Infinity,
   state: '待機', detections: 0, fallbacks: 0, rejected: 0, lost: 0,
-  tries: { crop: 0, full: 0 }, hits: { crop: 0, full: 0 },   // 探し方ごとの試行回数と成功回数
+  tries: {}, hits: {},   // 探し方ごとの試行回数と成功回数（正面＝MindAR既定、傾50＝傾き50°を仮定、前回＝最後に追跡できた向き）
+  lastWay: '', lastPose: null,
   errors: 0, errorStreak: 0, lastError: '', lastFrameAt: 0, _t0: 0, _n: 0,
 };
 
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
 let runToken = 0;
 
-// 画面全体を縮めて、図面の目印を探す。目印の位置は元の画面の座標に戻して返す
-function detectWholeFrame(controller, inputT) {
-  const tf = window.MINDAR && window.MINDAR.IMAGE && window.MINDAR.IMAGE.tf;
-  const crop = controller.cropDetector;
-  if (!tf) return crop.detectMoving(inputT).featurePoints;
-  const size = crop.cropSize;                       // 探す処理が受け取れる画像の一辺
-  const ratio = size / Math.max(crop.width, crop.height);
-  const h = Math.round(crop.height * ratio), w = Math.round(crop.width * ratio);
-  const small = tf.tidy(() => {
-    let img = inputT.expandDims(0).expandDims(3);
-    const pool = Math.floor(1 / ratio);
-    if (pool >= 2) img = tf.avgPool(img, pool, pool, 'valid');   // 先に平均してから縮める（細い線が途切れないように）
-    img = tf.image.resizeBilinear(img, [h, w]).squeeze([0, 3]);
-    // 足りない辺は鏡写しで埋める（黒で埋めると、境目が目印として拾われてしまう）
-    return h === size && w === size ? img : tf.mirrorPad(img, [[0, size - h], [0, size - w]], 'reflect');
-  });
-  const { featurePoints } = crop.detector.detect(small);
-  small.dispose();
-  const inside = featurePoints.filter((p) => p.x < w && p.y < h);
-  for (const p of inside) { p.x /= ratio; p.y /= ratio; p.scale /= ratio; }
-  return inside;
-}
-
 export function installTracking(cfg) {
   const stats = trackingStats;
+
+  // 斜めの探索は MindAR が同梱する計算ライブラリを借りる。見つからなければ、斜めの探索だけをやめる
+  if (cfg.obliqueSearch && !(window.MINDAR && window.MINDAR.IMAGE && window.MINDAR.IMAGE.tf)) {
+    console.warn('斜めの探索を無効にしました（MindAR の計算ライブラリが見つかりません）');
+    cfg.obliqueSearch = 0;
+  }
 
   // MindAR はカメラの大きさを指定せずに開くので、希望があればここで足す
   const media = navigator.mediaDevices;
@@ -95,6 +82,47 @@ export function installTracking(cfg) {
     this.trackingStates = states;
     stats._t0 = performance.now(); stats._n = 0; stats.errorStreak = 0; stats.lastFrameAt = performance.now();
     let detectTurn = 0;
+    let lastNormal = null;   // 最後に追跡できていたときの図面の向き（斜めのときだけ覚える）
+    let scratch = null;
+    let scratchCtx = null;
+    let windowPixels = null;
+
+    // 斜めの探索で試す見え方の一覧。仮定する傾きと、画面のどこを見るかの組み合わせを順に回る
+    const obliqueViews = () => {
+      const kinds = [];
+      if (lastNormal) kinds.push(['前回', facing(lastNormal)]);
+      for (const d of cfg.searchTilts || []) kinds.push([`傾${d}`, tiltTowardTop(d)]);
+      for (const d of cfg.searchSideTilts || []) { kinds.push([`右${d}`, tiltTowardSide(d)]); kinds.push([`左${d}`, tiltTowardSide(-d)]); }
+      const views = [];
+      // 図面は画面の中央に来ることが多いので、中央を多めに試す
+      for (const y of [0.5, 0.5, 0.32, 0.5, 0.5, 0.68]) for (const [label, turn] of kinds) views.push({ label, turn, x: 0.5, y });
+      return views;
+    };
+
+    // 映像を図面と正対する向きに直してから探す
+    const searchOblique = async (view, candidates) => {
+      const tf = window.MINDAR && window.MINDAR.IMAGE && window.MINDAR.IMAGE.tf;
+      const K = this.projectionTransform;
+      const size = this.cropDetector.cropSize;
+      const frame = this.inputLoader.context.canvas;   // loadInput がいまのコマを描いた直後の画像
+      const k = Math.min(1, 640 / Math.max(frame.width, frame.height));
+      const sw = Math.round(frame.width * k), sh = Math.round(frame.height * k);
+      if (!scratch || scratch.width !== sw || scratch.height !== sh) {
+        scratch = document.createElement('canvas'); scratch.width = sw; scratch.height = sh;
+        scratchCtx = scratch.getContext('2d', { willReadFrequently: true });
+        windowPixels = new Float32Array(size * size);
+      }
+      scratchCtx.drawImage(frame, 0, 0, sw, sh);
+      const rgba = scratchCtx.getImageData(0, 0, sw, sh).data;
+      const { toCamera } = planWindow(K, this.inputWidth, view.turn, this.inputWidth * view.x, this.inputHeight * view.y, size);
+      const toSource = [toCamera[0].map((v) => v * k), toCamera[1].map((v) => v * k), toCamera[2]];
+      renderWindow(rgba, sw, sh, toSource, size, windowPixels);
+      const imageT = tf.tensor(windowPixels, [size, size], 'float32');
+      let featurePoints;
+      try { featurePoints = this.cropDetector.detector.detect(imageT).featurePoints; } finally { imageT.dispose(); }
+      const { targetIndex, modelViewTransform } = await this._workerMatch(featurePoints, candidates);
+      return { targetIndex, modelViewTransform: targetIndex === -1 ? null : poseFromWindow(K, toCamera, modelViewTransform) };
+    };
 
     const emit = (i, transform) => {
       let worldMatrix = null;
@@ -112,14 +140,19 @@ export function installTracking(cfg) {
         states.forEach((s, i) => {
           if (!s.isTracking && (this.interestedTargetIndex === -1 || this.interestedTargetIndex === i)) candidates.push(i);
         });
-        const way = cfg.detectMode === 1 || (cfg.detectMode === 2 && detectTurn % 2 === 1) ? 'full' : 'crop';
+        // 正面向けの探し方（MindAR既定）と、斜め向けの探し方を1コマおきに交互に使う
+        const views = cfg.obliqueSearch && detectTurn % 2 === 1 ? obliqueViews() : [];
+        const view = views.length ? views[(detectTurn >> 1) % views.length] : null;
         detectTurn += 1;
-        const featurePoints = way === 'full' ? detectWholeFrame(this, inputT) : this.cropDetector.detectMoving(inputT).featurePoints;
-        const { targetIndex, modelViewTransform } = await this._workerMatch(featurePoints, candidates);
-        stats.tries[way] += 1;
+        const way = view ? view.label : '正面';
+        const { targetIndex, modelViewTransform } = view
+          ? await searchOblique(view, candidates)
+          : await this._detectAndMatch(inputT, candidates);
+        stats.tries[way] = (stats.tries[way] || 0) + 1;
         if (targetIndex !== -1) {
-          stats.hits[way] += 1;
+          stats.hits[way] = (stats.hits[way] || 0) + 1;
           stats.detections += 1;
+          stats.lastWay = way; stats.lastPose = modelViewTransform;
           if (!cfg.detectOnly) {
             const s = states[targetIndex];
             s.isTracking = true; s.locked = false; s.currentModelViewTransform = modelViewTransform; s.failStreak = 0;
@@ -146,6 +179,8 @@ export function installTracking(cfg) {
           }
           if (next) {
             s.currentModelViewTransform = next; s.failStreak = 0; s.locked = true; good = true;
+            const tilt = planeTilt(next);
+            lastNormal = tilt.deg > 25 ? tilt.normal : null;   // 正面に近ければ、既定の探し方で足りる
           } else if (!s.locked) {
             // 探して得たばかりの姿勢で一度も追跡できなかった：その姿勢が粗いので、粘らずすぐ探し直す
             s.isTracking = false; stats.rejected += 1;

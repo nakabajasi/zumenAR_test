@@ -1,12 +1,14 @@
 // AR表示。図面（認識対象）ごとに置き場所を用意し、認識できた図面のモデルだけを読み込む
 import * as THREE from 'three';
+// 読み込む順番に意味がある：tracking.js が先。MindAR の2つのファイルはどちらも window.MINDAR.IMAGE に
+// 部品を登録するが、tracking.js が使う側は丸ごと置き換え、下の three 用は追記する。逆順だと追記分が消える
+import { TRACKING_DEFAULTS, trackingStats, installTracking } from './tracking.js';
 import { MindARThree } from '../lib/mindar/mindar-image-three.prod.js';
 import {
   url, loadCatalog, itemFromQuery, fetchJson, isInAppBrowser, loadItemObject, addLights,
   buildAnnotations, pickAnnotation, syncLineResolution,
 } from './common.js';
 import { createPanel } from './panel.js';
-import { TRACKING_DEFAULTS, trackingStats, installTracking } from './tracking.js';
 import { PoseStabilizer } from './stabilizer.js';
 
 const $ = (id) => document.getElementById(id);
@@ -252,9 +254,10 @@ function updateDebug(now) {
     `状態 ${t.state}${current && current.stabilizer.held ? '（固定表示）' : ''}`,
     `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,
     `手がかり ${t.points}点（表示中の最少 ${Number.isFinite(t.minPointsSeen) ? t.minPointsSeen : '-'}）`,
-    `発見 ${t.detections}（一部 ${t.hits.crop}/${t.tries.crop}  全体 ${t.hits.full}/${t.tries.full}）  却下 ${t.rejected}`,
+    `発見 ${t.detections}  却下 ${t.rejected}`,
+    `探索 ${Object.keys(t.tries).map((k) => `${k} ${t.hits[k] || 0}/${t.tries[k]}`).join('  ')}`,
     `探し直し ${t.fallbacks}  見失い ${t.lost}  作り直し ${heals}`,
-    `エラー ${t.errors}${t.lastError ? ` ${t.lastError.slice(0, 40)}` : ''}${performance.now() - t.lastFrameAt > 1500 ? '  ※処理停止中' : ''}`,
+    `エラー ${t.errors}${t.lastError ? ` ${t.lastError.slice(0, 40)}` : ''}${performance.now() - t.lastFrameAt > 2500 ? '  ※処理停止中' : ''}`,
     `映像 ${v ? `${v.videoWidth}×${v.videoHeight}` : '-'}  画素比 ${mindar.renderer.getPixelRatio()}`,
   ].join('\n');
 }

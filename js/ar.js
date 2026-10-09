@@ -13,8 +13,9 @@ const $ = (id) => document.getElementById(id);
 const stage = $('stage');
 const hint = $('hint');
 const showHint = (text) => { hint.textContent = text || ''; hint.hidden = !text; };
-const SCAN_HINT = '図面全体が画面に入るようにかざしてください';
-const HOLD_HINT = '図面を見失いました。表示を固定しています';
+// 図面は近いほど見つけやすい（擬似映像での成功率：画面いっぱい約9割、画面幅の半分では約3割）
+const SCAN_HINT = '図面が画面いっぱいになるように近づけてください';
+const HOLD_HINT = '図面を見失いました。図面を画面いっぱいに映すと再開します';
 const KEEP_LOADED = 2;   // 同時に持つモデルの数。iPhoneのメモリ不足を避ける
 const DEFAULT_FIT = 0.35;
 
@@ -120,6 +121,7 @@ function bindPanel(slot) {
 }
 
 function onFound(slot) {
+  $('recover').hidden = true;
   slot.usedAt = performance.now();
   const changed = current !== slot;
   current = slot;
@@ -133,7 +135,9 @@ function onFound(slot) {
 
 function onLost(slot) {
   // パネルは残す（図面から目を離しても情報を読み続けられるように）
-  if (current === slot) showHint(tracking.hold && slot.model ? HOLD_HINT : SCAN_HINT);
+  if (current !== slot) return;
+  showHint(tracking.hold && slot.model ? HOLD_HINT : SCAN_HINT);
+  $('recover').hidden = false; // 戻しても再開しないときに、読み込み直さずやり直せるようにする
 }
 
 /* ---------- 指の操作 ---------- */
@@ -202,7 +206,29 @@ function render(now) {
   }
   syncLineResolution(mindar.renderer);
   mindar.renderer.render(mindar.scene, mindar.camera);
+  watchdog(now);
   if (debug) updateDebug(now);
+}
+
+// 追跡の処理が止まった・例外が続くときは、追跡だけを作り直す（カメラはそのまま）
+let healedAt = -1e9;
+let heals = 0;
+function watchdog(now) {
+  if (!running) return;
+  const t = trackingStats;
+  if (t.errorStreak < 5 && now - t.lastFrameAt < 3000) return;
+  if (now - healedAt < 8000) {
+    // 作り直した直後にまた止まった：自動では直せない
+    if (now - healedAt > 3000) { showHint('追跡が止まりました。「探し直す」を押してください'); $('recover').hidden = false; }
+    return;
+  }
+  healedAt = now; heals += 1;
+  const controller = mindar.controller;
+  controller.stopProcessVideo();
+  // MindAR 側の「見えている」という記録を消してから始め直す
+  slots.forEach((s) => { if (s.anchor.visible) controller.onUpdate({ type: 'updateMatrix', targetIndex: s.item.targetIndex, worldMatrix: null }); });
+  t.errorStreak = 0; t.lastFrameAt = performance.now();
+  controller.processVideo(mindar.video);
 }
 
 // ?debug=1 を付けると、追跡の状態を画面に出す（実機での調整用）
@@ -226,7 +252,9 @@ function updateDebug(now) {
     `状態 ${t.state}${current && current.stabilizer.held ? '（固定表示）' : ''}`,
     `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,
     `手がかり ${t.points}点（表示中の最少 ${Number.isFinite(t.minPointsSeen) ? t.minPointsSeen : '-'}）`,
-    `発見 ${t.detections}  探し直し ${t.fallbacks}  見失い ${t.lost}`,
+    `発見 ${t.detections}（一部 ${t.hits.crop}/${t.tries.crop}  全体 ${t.hits.full}/${t.tries.full}）  却下 ${t.rejected}`,
+    `探し直し ${t.fallbacks}  見失い ${t.lost}  作り直し ${heals}`,
+    `エラー ${t.errors}${t.lastError ? ` ${t.lastError.slice(0, 40)}` : ''}${performance.now() - t.lastFrameAt > 1500 ? '  ※処理停止中' : ''}`,
     `映像 ${v ? `${v.videoWidth}×${v.videoHeight}` : '-'}  画素比 ${mindar.renderer.getPixelRatio()}`,
   ].join('\n');
 }
@@ -238,14 +266,18 @@ function scheduleRestart() {
   clearTimeout(restartTimer);
   restartTimer = setTimeout(restart, 350);
 }
+// カメラと追跡を最初から作り直す（ページの再読み込みに近いが、モデルや情報パネルは残る）
 async function restart() {
   if (!running) return;
   running = false;
+  $('recover').hidden = true;
+  showHint('探し直しています…');
   mindar.renderer.setAnimationLoop(null);
   try {
     mindar.stop();
-    slots.forEach((s) => s.stabilizer.reset()); // 向きが変わると前の姿勢は使えない
+    slots.forEach((s) => { s.stabilizer.reset(); s.anchor.visible = false; }); // 前の姿勢は捨てる
     await mindar.start();
+    trackingStats.errorStreak = 0; trackingStats.lastFrameAt = performance.now();
     mindar.renderer.setAnimationLoop(render);
     running = true;
     showHint(SCAN_HINT);
@@ -299,7 +331,9 @@ async function start(catalog, preferred) {
   window.addEventListener('orientationchange', scheduleRestart);
   if (screen.orientation) screen.orientation.addEventListener('change', scheduleRestart);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && running && mindar.video && mindar.video.paused) mindar.video.play().catch(() => {});
+    if (document.hidden || !running) return;
+    trackingStats.lastFrameAt = performance.now(); // 画面を離れていた時間を「処理が止まった」と数えない
+    if (mindar.video && mindar.video.paused) mindar.video.play().catch(() => {});
   });
 }
 
@@ -320,6 +354,7 @@ async function main() {
     current.model.setMode(shape ? 'shape' : 'photo');
     $('btn-mode').setAttribute('aria-pressed', String(shape));
   });
+  $('btn-rescan').addEventListener('click', () => (running ? restart() : location.reload()));
   $('btn-reset').addEventListener('click', () => {
     if (!current) return;
     current.user.rotation.set(0, 0, 0);

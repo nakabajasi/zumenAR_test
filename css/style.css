@@ -97,8 +97,14 @@ body.viewer-page { background: radial-gradient(120% 90% at 50% 35%, #f3f0e8 0%, 
   pointer-events: none;
 }
 
+.recover {
+  position: fixed; z-index: 16; left: 0; right: 0; top: calc(134px + env(safe-area-inset-top));
+  display: flex; justify-content: center; pointer-events: none;
+}
+.recover .pill { pointer-events: auto; background: var(--shu); border-color: var(--shu); color: #fff; }
+
 .debug {
-  position: fixed; z-index: 16; left: calc(8px + env(safe-area-inset-left)); top: calc(116px + env(safe-area-inset-top));
+  position: fixed; z-index: 16; left: calc(8px + env(safe-area-inset-left)); top: calc(190px + env(safe-area-inset-top));
   margin: 0; padding: 6px 8px; border-radius: 4px; pointer-events: none;
   background: rgba(0, 0, 0, 0.62); color: #e9ffe0; font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace; white-space: pre;
 }

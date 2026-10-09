@@ -91,10 +91,16 @@ body.viewer-page { background: radial-gradient(120% 90% at 50% 35%, #f3f0e8 0%, 
 .pill[aria-pressed="true"] { background: var(--panel-ink); color: var(--ink); }
 
 .hint {
-  position: fixed; z-index: 15; left: 50%; top: calc(64px + env(safe-area-inset-top)); transform: translateX(-50%);
-  max-width: calc(100% - 32px); padding: 8px 14px; border-radius: 4px;
+  position: fixed; z-index: 15; left: 16px; right: 16px; top: calc(64px + env(safe-area-inset-top));
+  width: fit-content; max-width: calc(100% - 32px); margin: 0 auto; padding: 8px 14px; border-radius: 4px;
   background: var(--panel); color: var(--panel-ink); font-size: 0.88rem; text-align: center;
   pointer-events: none;
+}
+
+.debug {
+  position: fixed; z-index: 16; left: calc(8px + env(safe-area-inset-left)); top: calc(116px + env(safe-area-inset-top));
+  margin: 0; padding: 6px 8px; border-radius: 4px; pointer-events: none;
+  background: rgba(0, 0, 0, 0.62); color: #e9ffe0; font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace; white-space: pre;
 }
 
 .gate {

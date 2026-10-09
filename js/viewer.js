@@ -79,11 +79,11 @@ async function main() {
 
   // 軽くたたいた（動かしていない）ときだけアノテーションを選ぶ
   let down = null;
-  renderer.domElement.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+  renderer.domElement.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, t: e.timeStamp }; });
   renderer.domElement.addEventListener('pointerup', (e) => {
     if (!down) return;
     const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
-    const quick = performance.now() - down.t < 400;
+    const quick = e.timeStamp - down.t < 400;
     down = null;
     if (moved > 8 || !quick) return;
     const entry = pickAnnotation(e.clientX, e.clientY, renderer.domElement, camera, annotations, model);

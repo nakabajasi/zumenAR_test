@@ -6,12 +6,15 @@ import {
   buildAnnotations, pickAnnotation, syncLineResolution,
 } from './common.js';
 import { createPanel } from './panel.js';
+import { TRACKING_DEFAULTS, trackingStats, installTracking } from './tracking.js';
+import { PoseStabilizer } from './stabilizer.js';
 
 const $ = (id) => document.getElementById(id);
 const stage = $('stage');
 const hint = $('hint');
 const showHint = (text) => { hint.textContent = text || ''; hint.hidden = !text; };
 const SCAN_HINT = '図面全体が画面に入るようにかざしてください';
+const HOLD_HINT = '図面を見失いました。表示を固定しています';
 const KEEP_LOADED = 2;   // 同時に持つモデルの数。iPhoneのメモリ不足を避ける
 const DEFAULT_FIT = 0.35;
 
@@ -20,6 +23,8 @@ let running = false;
 let slots = [];
 let current = null;      // いま情報パネルに出している資料
 let panel = null;
+let tracking = { ...TRACKING_DEFAULTS };
+const debug = new URLSearchParams(location.search).has('debug');
 
 /* ---------- 置き方 ---------- */
 
@@ -38,15 +43,21 @@ function displayScale(item, model) {
 }
 
 function makeSlot(item) {
-  const anchor = mindar.addAnchor(item.targetIndex);
+  const anchor = mindar.addAnchor(item.targetIndex); // MindAR が出す生の姿勢（そのままでは細かく揺れる）
   const aspect = item.target.heightPx / item.target.widthPx;
   const [u, v] = (item.display && item.display.anchor) || [0.5, 0.5];
+  const root = new THREE.Group();   // なめらかにした姿勢。モデルはこちらに入れる
+  root.visible = false;
   const place = new THREE.Group();  // 図面上の置き場所（左上が0,0・右下が1,1）
   place.position.set(u - 0.5, (0.5 - v) * aspect, 0);
   const user = new THREE.Group();   // 指での回転・拡大
   place.add(user);
-  anchor.group.add(place);
-  const slot = { item, anchor, user, pose: null, model: null, annotations: null, meta: null, loading: null, usedAt: 0 };
+  root.add(place);
+  mindar.scene.add(root);
+  const slot = {
+    item, anchor, root, user, stabilizer: new PoseStabilizer(tracking),
+    pose: null, model: null, annotations: null, meta: null, loading: null, usedAt: 0,
+  };
   anchor.onTargetFound = () => onFound(slot);
   anchor.onTargetLost = () => onLost(slot);
   return slot;
@@ -115,14 +126,14 @@ function onFound(slot) {
   showHint('');
   ensureLoaded(slot).then(() => {
     if (current !== slot) return;
-    showHint(slot.anchor.visible ? '' : SCAN_HINT);
+    showHint(slot.anchor.visible ? '' : (slot.stabilizer.ready ? HOLD_HINT : SCAN_HINT));
     if (changed || $('panel').hidden) bindPanel(slot);
   }).catch(() => {});
 }
 
 function onLost(slot) {
   // パネルは残す（図面から目を離しても情報を読み続けられるように）
-  if (current === slot) showHint(SCAN_HINT);
+  if (current === slot) showHint(tracking.hold && slot.model ? HOLD_HINT : SCAN_HINT);
 }
 
 /* ---------- 指の操作 ---------- */
@@ -140,7 +151,7 @@ function setupGestures() {
   stage.addEventListener('pointerdown', (e) => {
     stage.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    tap = pointers.size === 1 ? { x: e.clientX, y: e.clientY, t: performance.now() } : null;
+    tap = pointers.size === 1 ? { x: e.clientX, y: e.clientY, t: e.timeStamp } : null;
     pinch = pointers.size === 2 && current && current.model ? { dist: spread(), scale: current.user.scale.x } : null;
   });
 
@@ -166,9 +177,9 @@ function setupGestures() {
     pinch = null;
     if (e.type !== 'pointerup' || !tap) return;
     const moved = Math.hypot(e.clientX - tap.x, e.clientY - tap.y);
-    const quick = performance.now() - tap.t < 400;
+    const quick = e.timeStamp - tap.t < 400; // 処理が混んでいても正しく測れるよう、指が触れた時刻そのもので比べる
     tap = null;
-    if (moved > 8 || !quick || !current || !current.model || !current.anchor.visible) return;
+    if (moved > 8 || !quick || !current || !current.model || !current.root.visible) return;
     const entry = pickAnnotation(e.clientX, e.clientY, mindar.renderer.domElement, mindar.camera, current.annotations, current.model);
     current.annotations.select(entry);
     panel.showSelection(entry);
@@ -179,9 +190,45 @@ function setupGestures() {
 
 /* ---------- 起動 ---------- */
 
-function render() {
+let lastRender = 0;
+function render(now) {
+  const dt = Math.min((now - lastRender) / 1000, 0.1);
+  lastRender = now;
+  for (const slot of slots) {
+    const live = slot.anchor.visible ? slot.anchor.group.matrix : null;
+    slot.stabilizer.update(live, dt, now);
+    slot.root.visible = slot === current && !!slot.model && slot.stabilizer.ready;
+    if (slot.root.visible) slot.stabilizer.applyTo(slot.root);
+  }
   syncLineResolution(mindar.renderer);
   mindar.renderer.render(mindar.scene, mindar.camera);
+  if (debug) updateDebug(now);
+}
+
+// ?debug=1 を付けると、追跡の状態を画面に出す（実機での調整用）
+let debugBox = null;
+let debugAt = 0;
+let renderCount = 0;
+let renderFps = 0;
+function updateDebug(now) {
+  renderCount += 1;
+  if (now - debugAt < 500) return;
+  renderFps = (renderCount * 1000) / (now - debugAt);
+  renderCount = 0; debugAt = now;
+  if (!debugBox) {
+    debugBox = document.createElement('pre');
+    debugBox.className = 'debug';
+    document.body.append(debugBox);
+  }
+  const t = trackingStats;
+  const v = mindar.video;
+  debugBox.textContent = [
+    `状態 ${t.state}${current && current.stabilizer.held ? '（固定表示）' : ''}`,
+    `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,
+    `手がかり ${t.points}点（表示中の最少 ${Number.isFinite(t.minPointsSeen) ? t.minPointsSeen : '-'}）`,
+    `発見 ${t.detections}  探し直し ${t.fallbacks}  見失い ${t.lost}`,
+    `映像 ${v ? `${v.videoWidth}×${v.videoHeight}` : '-'}  画素比 ${mindar.renderer.getPixelRatio()}`,
+  ].join('\n');
 }
 
 // 端末を回すとカメラ映像の縦横が入れ替わるので、認識を作り直す
@@ -197,6 +244,7 @@ async function restart() {
   mindar.renderer.setAnimationLoop(null);
   try {
     mindar.stop();
+    slots.forEach((s) => s.stabilizer.reset()); // 向きが変わると前の姿勢は使えない
     await mindar.start();
     mindar.renderer.setAnimationLoop(render);
     running = true;
@@ -211,12 +259,21 @@ async function start(catalog, preferred) {
     throw new Error('このブラウザではカメラを使えません。SafariかChromeで開いてください。');
   }
   stage.innerHTML = ''; // やり直しのときに前回の映像・描画面を残さない
+
+  // 追跡の設定：既定値 ← 台帳の tracking ← URL（例 ar.html?debug=1&stillCutoff=0.3）
+  Object.assign(tracking, catalog.tracking || {});
+  const query = new URLSearchParams(location.search);
+  for (const key of Object.keys(TRACKING_DEFAULTS)) {
+    if (query.has(key) && Number.isFinite(Number(query.get(key)))) tracking[key] = Number(query.get(key));
+  }
+  installTracking(tracking);
+
   mindar = new MindARThree({
     container: stage,
     imageTargetSrc: url('targets/all.mind'),
     maxTrack: 1,
     uiLoading: 'no', uiScanning: 'no', uiError: 'no',
-    ...(catalog.tracking || {}),
+    warmupTolerance: tracking.warmupTolerance,
   });
   mindar.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   mindar.renderer.domElement.addEventListener('webglcontextlost', (e) => {
@@ -289,7 +346,7 @@ async function main() {
     }
   });
 
-  window.__ar = { get mindar() { return mindar; }, get slots() { return slots; }, get current() { return current; }, restart }; // 確認用
+  window.__ar = { get mindar() { return mindar; }, get slots() { return slots; }, get current() { return current; }, restart, tracking, stats: trackingStats }; // 確認用
 }
 
 main().catch((err) => {

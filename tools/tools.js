@@ -1,11 +1,13 @@
 // 管理用：認識用データ（all.mind）の作成と、QRコードの生成
 import { Compiler } from '../lib/mindar/mindar-image.prod.js';
+import { extractDense } from './trackpoints.js';
 
 const $ = (id) => document.getElementById(id);
 const ROOT = new URL('..', import.meta.url);
-// 判定の目安（追跡用の目印の数）。実機での確認に代わるものではない
-const GOOD = 20;
-const POOR = 10;
+// 判定の目安（追跡用の手がかりの数）。実機での確認に代わるものではない。
+// 実際に各コマで使えるのは、このうち半分弱（ぼけ・暗さ・傾きで減る）。姿勢の計算には6点以上が要る
+const GOOD = 45;
+const POOR = 20;
 
 const catalog = await (await fetch(new URL('data/items.json', ROOT), { cache: 'no-cache' })).json();
 const items = catalog.items.slice().sort((a, b) => a.targetIndex - b.targetIndex);
@@ -38,6 +40,16 @@ async function compile() {
     const images = await Promise.all(items.map((it) => loadImage(it.target.source)));
     const compiler = new Compiler();
     const data = await compiler.compileImageTargets(images, (p) => { status.textContent = `作成中… ${Math.round(p)}%`; });
+    // 追跡用の手がかりを、間隔を詰めて選び直す（?dense=0 で標準のまま）
+    const dense = new URLSearchParams(location.search).get('dense') !== '0';
+    const standardCounts = data.map((d) => d.trackingData[Math.min(1, d.trackingData.length - 1)].points.length);
+    if (dense) {
+      for (const d of data) {
+        const frame = d.trackingData[Math.min(1, d.trackingData.length - 1)];
+        const points = extractDense(frame);
+        if (points.length > frame.points.length) frame.points = points;
+      }
+    }
     const buffer = await compiler.exportData();
 
     const tbody = $('compile-table').querySelector('tbody');
@@ -53,7 +65,7 @@ async function compile() {
       const mismatch = (items[i].target.widthPx !== images[i].naturalWidth || items[i].target.heightPx !== images[i].naturalHeight)
         ? '（台帳の widthPx / heightPx と不一致）' : '';
       const tr = document.createElement('tr');
-      [[String(items[i].targetIndex), 'num'], [items[i].id], [size + mismatch], [String(detect), 'num'], [String(track), 'num'], [verdict]].forEach(([text, cls]) => {
+      [[String(items[i].targetIndex), 'num'], [items[i].id], [size + mismatch], [String(detect), 'num'], [dense ? `${track}（標準 ${standardCounts[i]}）` : String(track), 'num'], [verdict]].forEach(([text, cls]) => {
         const td = document.createElement('td');
         if (cls) td.className = cls;
         td.textContent = text;

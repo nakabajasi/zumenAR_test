@@ -3,7 +3,7 @@
 // MindAR 既定の動きと、ここで変えている点：
 //   既定  1コマでも追跡に失敗すると、図面を探し直す処理に戻る。探し直しで得る姿勢は粗いので、
 //         追跡と探し直しを行き来するたびにモデルが跳ね、探し直しに数回失敗すると消える。
-//   変更  追跡が一度軌道に乗ったあとは、失敗しても直前の姿勢から数コマ粘る。
+//   変更  追跡が一度軌道に乗ったあとは、失敗しても短時間だけ直前の姿勢から粘る。
 //         手がかりが少なすぎるコマは姿勢の更新に使わない。
 //         見失ったあとは最後の姿勢のまま表示を残す（表示側の PoseStabilizer）。
 //   既定  追跡の処理の中で一度でも例外が出ると、処理全体が止まり、再読み込みするまで戻らない。
@@ -16,7 +16,7 @@ import { tiltTowardTop, tiltTowardSide, facing, planeTilt, planWindow, renderWin
 
 export const TRACKING_DEFAULTS = {
   minPoints: 6,        // 姿勢の更新に使う手がかりの最少数（MindAR既定は4。少ないと姿勢が暴れる）
-  retryFrames: 8,      // 追跡に失敗しても、探し直しに戻らず粘るコマ数（MindAR既定は0）
+  retryAfterMs: 300,   // 最後に追跡できてから、この時間を超えて失敗が続いたら探し直す
   warmupTolerance: 2,  // 表示を始めるまでに必要な連続成功コマ数
   lostAfterMs: 800,    // 姿勢が得られない状態がこの時間（ミリ秒）続いたら「見失った」と判断する
   obliqueSearch: 1,    // 1＝斜めから見た図面も探す
@@ -37,12 +37,11 @@ export const trackingStats = {
   frames: 0, fps: 0, points: 0, used: 0, minPointsSeen: Infinity,
   state: '待機', detections: 0, fallbacks: 0, rejected: 0, lost: 0,
   tries: {}, hits: {},   // 探し方ごとの試行回数と成功回数（正面＝MindAR既定、傾50＝傾き50°を仮定、前回＝最後に追跡できた向き）
-  lastWay: '', lastPose: null,
+  lastWay: '', lastPose: null, lastPoseAt: null,
   errors: 0, errorStreak: 0, lastError: '', lastFrameAt: 0, _t0: 0, _n: 0,
 };
 
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
-let runToken = 0;
 
 export function installTracking(cfg) {
   const stats = trackingStats;
@@ -69,18 +68,23 @@ export function installTracking(cfg) {
 
   Controller.prototype.stopProcessVideo = function stopProcessVideo() {
     this.processingVideo = false;
-    runToken += 1; // 止めた処理が、次に始めた処理と並んで走り続けないようにする
+    this._trackingRunToken = (this._trackingRunToken || 0) + 1;
   };
 
   Controller.prototype.processVideo = function processVideo(input) {
     if (this.processingVideo) return;
     this.processingVideo = true;
-    const token = ++runToken;
+    const token = this._trackingRunToken = (this._trackingRunToken || 0) + 1;
+    const active = () => this.processingVideo && token === this._trackingRunToken;
+    const minPoints = Math.max(4, Math.ceil(Number(cfg.minPoints) || 6));
+    const retryAfterMs = Math.max(0, Number(cfg.retryAfterMs) || 0);
+    const warmupFrames = Math.max(1, Math.ceil(Number(this.warmupTolerance) || 1));
     const states = this.markerDimensions.map(() => ({
       showing: false, isTracking: false, locked: false, currentModelViewTransform: null, trackCount: 0, lastGoodAt: 0, failStreak: 0,
     }));
     this.trackingStates = states;
     stats._t0 = performance.now(); stats._n = 0; stats.errorStreak = 0; stats.lastFrameAt = performance.now();
+    stats.points = 0; stats.used = 0; stats.lastPoseAt = null;
     let detectTurn = 0;
     let lastNormal = null;   // 最後に追跡できていたときの図面の向き（斜めのときだけ覚える）
     let scratch = null;
@@ -121,19 +125,40 @@ export function installTracking(cfg) {
       let featurePoints;
       try { featurePoints = this.cropDetector.detector.detect(imageT).featurePoints; } finally { imageT.dispose(); }
       const { targetIndex, modelViewTransform } = await this._workerMatch(featurePoints, candidates);
+      if (!active()) return { targetIndex: -1, modelViewTransform: null };
       return { targetIndex, modelViewTransform: targetIndex === -1 ? null : poseFromWindow(K, toCamera, modelViewTransform) };
     };
 
     const emit = (i, transform) => {
+      if (!active()) return;
       let worldMatrix = null;
       if (transform) {
         worldMatrix = [...this._glModelViewMatrix(transform, i)];
         if (input.width === this.inputHeight && input.height === this.inputWidth) worldMatrix = this.getRotatedZ90Matrix(worldMatrix);
+        stats.lastPoseAt = performance.now();
       }
       this.onUpdate && this.onUpdate({ type: 'updateMatrix', targetIndex: i, worldMatrix });
     };
 
+    const expireShowing = (now) => {
+      states.forEach((s, i) => {
+        if (s.showing && now - s.lastGoodAt > cfg.lostAfterMs) {
+          s.showing = false; s.trackCount = 0; stats.lost += 1;
+          emit(i, null);
+        }
+      });
+    };
+
     const step = async (inputT) => {
+      // 遅い端末でも、失敗を8回待ち続けない。期限後のコマは直ちに再探索へ回す。
+      const now = performance.now();
+      expireShowing(now);
+      states.forEach((s) => {
+        if (s.isTracking && s.locked && s.failStreak && now - s.lastGoodAt >= retryAfterMs) {
+          s.isTracking = false; s.trackCount = 0; stats.fallbacks += 1;
+        }
+      });
+      stats.points = 0; stats.used = 0;
       // 図面を探す（追跡中の図面が上限に達していないときだけ）
       if (states.filter((s) => s.isTracking).length < this.maxTrack) {
         const candidates = [];
@@ -148,6 +173,7 @@ export function installTracking(cfg) {
         const { targetIndex, modelViewTransform } = view
           ? await searchOblique(view, candidates)
           : await this._detectAndMatch(inputT, candidates);
+        if (!active()) return; // 停止・再起動前の結果は使わない
         stats.tries[way] = (stats.tries[way] || 0) + 1;
         if (targetIndex !== -1) {
           stats.hits[way] = (stats.hits[way] || 0) + 1;
@@ -167,18 +193,19 @@ export function installTracking(cfg) {
         if (s.isTracking) {
           const { worldCoords, screenCoords } = this.tracker.track(inputT, s.currentModelViewTransform, i);
           stats.points = worldCoords.length;
-          if (s.showing) stats.minPointsSeen = Math.min(stats.minPointsSeen, worldCoords.length);
           let next = null;
           let used = { worldCoords, screenCoords };
           if (cfg.rejectOutliers) used = consistentPoints(this.projectionTransform, s.currentModelViewTransform, worldCoords, screenCoords);
           stats.used = used.worldCoords.length;
-          // 表示中は多めの手がかりを求める（揺れを抑える）。表示前は MindAR 既定の4点で受け付ける（早く復帰する）
-          const need = s.showing ? cfg.minPoints : Math.min(cfg.minPoints, 4);
-          if (used.worldCoords.length >= need) {
+          if (s.showing) stats.minPointsSeen = Math.min(stats.minPointsSeen, stats.used);
+          // 開始・継続とも同じ条件。4〜5点だけで表示を始め、その直後に更新不能になるのを防ぐ。
+          if (used.worldCoords.length >= minPoints) {
             next = await this._workerTrackUpdate(s.currentModelViewTransform, used);
+            if (!active()) return;
           }
           if (next) {
             s.currentModelViewTransform = next; s.failStreak = 0; s.locked = true; good = true;
+            s.lastGoodAt = performance.now();
             const tilt = planeTilt(next);
             lastNormal = tilt.deg > 25 ? tilt.normal : null;   // 正面に近ければ、既定の探し方で足りる
           } else if (!s.locked) {
@@ -186,44 +213,47 @@ export function installTracking(cfg) {
             s.isTracking = false; stats.rejected += 1;
           } else {
             s.failStreak += 1;
-            if (s.failStreak > cfg.retryFrames) { s.isTracking = false; stats.fallbacks += 1; }
+            if (performance.now() - s.lastGoodAt >= retryAfterMs) {
+              s.isTracking = false; s.trackCount = 0; stats.fallbacks += 1;
+            }
           }
         }
 
         if (!s.showing) {
           s.trackCount = good ? s.trackCount + 1 : 0;
-          if (s.trackCount > this.warmupTolerance) { s.showing = true; s.lastGoodAt = performance.now(); }
+          if (s.trackCount >= warmupFrames) s.showing = true;
         }
         if (s.showing) {
           const t = performance.now();
           if (good) {
             s.lastGoodAt = t;
             emit(i, s.currentModelViewTransform);
-          } else if (t - s.lastGoodAt > cfg.lostAfterMs) {
-            // 端末によって処理の速さが違うので、コマ数ではなく時間で判断する
-            s.showing = false; s.trackCount = 0; stats.lost += 1;
-            emit(i, null);
           }
         }
       }
 
-      const active = states.find((s) => s.showing);
-      stats.state = active ? (active.failStreak ? '粘り中' : '追跡中') : (states.some((s) => s.isTracking) ? '確認中' : '探索中');
+      const activeState = states.find((s) => s.showing && s.isTracking);
+      stats.state = activeState ? (activeState.failStreak ? '粘り中' : '追跡中') : (states.some((s) => s.isTracking) ? '確認中' : '探索中');
     };
 
     const run = async () => {
-      while (this.processingVideo && token === runToken) {
+      while (active()) {
         let inputT = null;
         try {
           inputT = this.inputLoader.loadInput(input);
           await step(inputT);
-          stats.errorStreak = 0;
+          if (active()) stats.errorStreak = 0;
         } catch (err) {
           // 1コマの失敗で処理全体が止まらないようにする（止まると再読み込みするまで復帰しない）
-          stats.errors += 1; stats.errorStreak += 1; stats.lastError = String((err && err.message) || err);
-          states.forEach((s) => { s.isTracking = false; s.locked = false; s.failStreak = 0; });
+          if (active()) {
+            stats.errors += 1; stats.errorStreak += 1; stats.lastError = String((err && err.message) || err);
+            states.forEach((s) => { s.isTracking = false; s.locked = false; s.failStreak = 0; s.trackCount = 0; });
+          }
+        } finally {
+          try { if (inputT) inputT.dispose(); } catch (err) { /* 描画面が失われたときは破棄も失敗する */ }
         }
-        try { if (inputT) inputT.dispose(); } catch (err) { /* 描画面が失われたときは破棄も失敗する */ }
+        if (!active()) return;
+        expireShowing(performance.now());
         stats.frames += 1; stats._n += 1;
         const now = performance.now();
         stats.lastFrameAt = now;
@@ -232,7 +262,7 @@ export function installTracking(cfg) {
         await nextFrame();
       }
     };
-    run();
+    this._trackingRunPromise = run();
   };
 }
 

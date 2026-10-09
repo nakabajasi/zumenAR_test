@@ -2,14 +2,15 @@
 import * as THREE from 'three';
 // 読み込む順番に意味がある：tracking.js が先。MindAR の2つのファイルはどちらも window.MINDAR.IMAGE に
 // 部品を登録するが、tracking.js が使う側は丸ごと置き換え、下の three 用は追記する。逆順だと追記分が消える
-import { TRACKING_DEFAULTS, trackingStats, installTracking } from './tracking.js';
+import { TRACKING_DEFAULTS, trackingStats, installTracking } from './tracking.js?rev=tracking-fix-20261009';
 import { MindARThree } from '../lib/mindar/mindar-image-three.prod.js';
 import {
   url, loadCatalog, itemFromQuery, fetchJson, isInAppBrowser, loadItemObject, addLights,
   buildAnnotations, pickAnnotation, syncLineResolution,
 } from './common.js';
 import { createPanel } from './panel.js';
-import { PoseStabilizer } from './stabilizer.js';
+import { PoseStabilizer } from './stabilizer.js?rev=tracking-fix-20261009';
+import { disposeController } from './controller-lifecycle.js?rev=tracking-fix-20261009';
 
 const $ = (id) => document.getElementById(id);
 const stage = $('stage');
@@ -27,7 +28,7 @@ let slots = [];
 let current = null;      // いま情報パネルに出している資料
 let panel = null;
 let tracking = { ...TRACKING_DEFAULTS };
-const debug = new URLSearchParams(location.search).has('debug');
+let debug = new URLSearchParams(location.search).has('debug');
 
 /* ---------- 置き方 ---------- */
 
@@ -59,10 +60,14 @@ function makeSlot(item) {
   mindar.scene.add(root);
   const slot = {
     item, anchor, root, user, stabilizer: new PoseStabilizer(tracking),
+    sample: { id: 0, at: 0 },
     pose: null, model: null, annotations: null, meta: null, loading: null, usedAt: 0,
   };
   anchor.onTargetFound = () => onFound(slot);
   anchor.onTargetLost = () => onLost(slot);
+  anchor.onTargetUpdate = () => {
+    if (anchor.visible) { slot.sample.id += 1; slot.sample.at = performance.now(); }
+  };
   return slot;
 }
 
@@ -202,7 +207,7 @@ function render(now) {
   lastRender = now;
   for (const slot of slots) {
     const live = slot.anchor.visible ? slot.anchor.group.matrix : null;
-    slot.stabilizer.update(live, dt, now);
+    slot.stabilizer.update(live, dt, now, slot.sample);
     slot.root.visible = slot === current && !!slot.model && slot.stabilizer.ready;
     if (slot.root.visible) slot.stabilizer.applyTo(slot.root);
   }
@@ -212,7 +217,8 @@ function render(now) {
   if (debug) updateDebug(now);
 }
 
-// 追跡の処理が止まった・例外が続くときは、追跡だけを作り直す（カメラはそのまま）
+// 追跡が止まったときは、旧Workerを終了してからカメラと追跡を作り直す。
+// 同じWorkerへ新しい要求を重ねると、遅れて届いた古い返答を取り違えるため再利用しない。
 let healedAt = -1e9;
 let heals = 0;
 function watchdog(now) {
@@ -225,12 +231,7 @@ function watchdog(now) {
     return;
   }
   healedAt = now; heals += 1;
-  const controller = mindar.controller;
-  controller.stopProcessVideo();
-  // MindAR 側の「見えている」という記録を消してから始め直す
-  slots.forEach((s) => { if (s.anchor.visible) controller.onUpdate({ type: 'updateMatrix', targetIndex: s.item.targetIndex, worldMatrix: null }); });
-  t.errorStreak = 0; t.lastFrameAt = performance.now();
-  controller.processVideo(mindar.video);
+  restart();
 }
 
 // ?debug=1 を付けると、追跡の状態を画面に出す（実機での調整用）
@@ -250,10 +251,13 @@ function updateDebug(now) {
   }
   const t = trackingStats;
   const v = mindar.video;
+  debugBox.hidden = false;
   debugBox.textContent = [
+    '追跡修正 2026-10-09',
     `状態 ${t.state}${current && current.stabilizer.held ? '（固定表示）' : ''}`,
     `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,
-    `手がかり ${t.points}点（表示中の最少 ${Number.isFinite(t.minPointsSeen) ? t.minPointsSeen : '-'}）`,
+    `手がかり ${t.points}点 → 採用 ${t.used}点 / 必要 ${tracking.minPoints}点`,
+    `最終姿勢から ${t.lastPoseAt == null ? '-' : Math.round(now - t.lastPoseAt)}ms`,
     `発見 ${t.detections}  却下 ${t.rejected}`,
     `探索 ${Object.keys(t.tries).map((k) => `${k} ${t.hits[k] || 0}/${t.tries[k]}`).join('  ')}`,
     `探し直し ${t.fallbacks}  見失い ${t.lost}  作り直し ${heals}`,
@@ -278,7 +282,11 @@ async function restart() {
   mindar.renderer.setAnimationLoop(null);
   try {
     mindar.stop();
-    slots.forEach((s) => { s.stabilizer.reset(); s.anchor.visible = false; }); // 前の姿勢は捨てる
+    disposeController(mindar.controller);
+    slots.forEach((s) => {
+      s.stabilizer.reset(); s.anchor.visible = false; s.anchor.group.visible = false; s.root.visible = false;
+    });
+    mindar.renderer.render(mindar.scene, mindar.camera);
     await mindar.start();
     trackingStats.errorStreak = 0; trackingStats.lastFrameAt = performance.now();
     mindar.renderer.setAnimationLoop(render);
@@ -286,6 +294,7 @@ async function restart() {
     showHint(SCAN_HINT);
   } catch (err) {
     showHint('カメラを再開できません。ページを読み込み直してください');
+    $('recover').hidden = false;
   }
 }
 
@@ -299,7 +308,7 @@ async function start(catalog, preferred) {
   Object.assign(tracking, catalog.tracking || {});
   const query = new URLSearchParams(location.search);
   for (const key of Object.keys(TRACKING_DEFAULTS)) {
-    if (query.has(key) && Number.isFinite(Number(query.get(key)))) tracking[key] = Number(query.get(key));
+    if (!Array.isArray(TRACKING_DEFAULTS[key]) && query.has(key) && Number.isFinite(Number(query.get(key)))) tracking[key] = Number(query.get(key));
   }
   installTracking(tracking);
 
@@ -345,6 +354,11 @@ async function main() {
   const preferred = itemFromQuery(catalog);
   if (preferred) $('link-viewer').href = `viewer.html?id=${encodeURIComponent(preferred.id)}`;
   if (isInAppBrowser()) $('inapp').hidden = false;
+  $('check-debug').checked = debug;
+  $('check-debug').addEventListener('change', (e) => {
+    debug = e.target.checked;
+    if (debugBox) debugBox.hidden = !debug;
+  });
 
   panel = createPanel($('panel'), {
     onLayerToggle: (layer, on) => { layer.object.visible = on; },

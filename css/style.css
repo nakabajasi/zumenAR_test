@@ -121,6 +121,8 @@ body.viewer-page { background: radial-gradient(120% 90% at 50% 35%, #f3f0e8 0%, 
 .gate .btn-primary { border-color: var(--shu); color: #fff; }
 .gate .callout { background: rgba(255, 255, 255, 0.06); color: var(--panel-ink); }
 .gate .error { color: #ffb4a4; }
+.diagnostic-option { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 0.9rem; }
+.diagnostic-option input { width: 20px; height: 20px; accent-color: var(--shu); }
 
 .panel {
   position: fixed; z-index: 20; left: 0; right: 0; bottom: 0;

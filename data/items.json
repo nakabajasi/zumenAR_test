@@ -9,9 +9,8 @@
       "targetIndex": 0,
       "title": "資料01（試験用モデル）",
       "subtitle": "遺構配置図にかざすと出ます",
-      "target": { "source": "targets/src/item01.jpg", "widthPx": 1847, "heightPx": 1238, "printWidthMm": null },
-      "model": { "src": "data/item01/model.glb", "rotationDeg": [-90, 0, 0], "metersPerUnit": null },
-      "display": { "mode": "stand", "anchor": [0.5, 0.5], "size": { "type": "fit", "value": 0.35 } },
+      "target": { "source": "targets/src/item01.jpg", "widthPx": 1847, "heightPx": 1238, "blenderWidth": 1 },
+      "model": { "src": "data/item01/model.glb", "coordinateSystem": "blender-z-up" },
       "meta": "data/item01/meta.json",
       "annotations": "data/item01/annotations.json"
     }

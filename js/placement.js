@@ -1,0 +1,68 @@
+// 図面左下＝Blender原点。モデルの外寸・中心から配置を決めない。
+import * as THREE from 'three';
+
+export function modelCoordinateSystem(item) {
+  const value = item.model.coordinateSystem ?? 'gltf-y-up';
+  if (value !== 'gltf-y-up' && value !== 'blender-z-up') {
+    throw new Error(`${item.id}: model.coordinateSystem は gltf-y-up または blender-z-up を指定してください`);
+  }
+  return value;
+}
+
+function positive(value, name, item) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${item.id}: ${name} は0より大きい数値で指定してください`);
+  }
+  return value;
+}
+
+export function createDrawingPlacement(item) {
+  const widthPx = positive(item.target.widthPx, 'target.widthPx', item);
+  const heightPx = positive(item.target.heightPx, 'target.heightPx', item);
+  const width = positive(item.target.blenderWidth ?? 1, 'target.blenderWidth', item);
+  const aspect = heightPx / widthPx;
+  const coordinateSystem = modelCoordinateSystem(item);
+  const group = new THREE.Group();
+  // MindARのアンカーは画像中心・幅1。固定の変換で画像左下へ移す。
+  group.position.set(-0.5, -aspect / 2, 0);
+  group.scale.setScalar(1 / width);
+  // 標準GLBの (x,y,z) → Blenderの (x,-z,y)。モデルの向きの再調整ではない。
+  if (coordinateSystem === 'gltf-y-up') group.rotation.x = Math.PI / 2;
+  return { group, width, height: width * aspect, coordinateSystem };
+}
+
+/**
+ * AR: preservePlacement=true でGLBルート以下の位置・回転・倍率をそのまま保持。
+ * 通常ビュー: 上を+Yにそろえ、底面中心・最大寸法1で観察できるようにする。
+ * rawはGLBシーン座標。メッシュローカル座標とは異なる。
+ */
+export function prepareModelFrame(scene, item, { preservePlacement = false } = {}) {
+  const raw = new THREE.Group();
+  raw.add(scene);
+  const oriented = new THREE.Group();
+  oriented.add(raw);
+  if (!preservePlacement) {
+    const fallback = modelCoordinateSystem(item) === 'blender-z-up' ? [-90, 0, 0] : [0, 0, 0];
+    oriented.rotation.set(...(item.model.rotationDeg ?? fallback).map(THREE.MathUtils.degToRad));
+  }
+  oriented.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(oriented);
+  const size = bounds.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const scale = preservePlacement ? 1 : 1 / maxDim;
+  if (!preservePlacement) {
+    const center = bounds.getCenter(new THREE.Vector3());
+    oriented.scale.setScalar(scale);
+    oriented.position.set(-center.x * scale, -bounds.min.y * scale, -center.z * scale);
+  }
+  const unit = new THREE.Group();
+  unit.add(oriented);
+  return { unit, raw, size, maxDim, bounds, unitSize: size.clone().multiplyScalar(scale) };
+}
+
+// AR用に保持したGLB範囲をBlender XYZへ変換。診断表示だけに使い、配置は動かさない。
+export function blenderBounds(model, coordinateSystem) {
+  const bounds = model.bounds.clone();
+  if (coordinateSystem === 'gltf-y-up') bounds.applyMatrix4(new THREE.Matrix4().makeRotationX(Math.PI / 2));
+  return bounds;
+}

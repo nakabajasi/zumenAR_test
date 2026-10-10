@@ -1,10 +1,17 @@
 # 図面AR（試作）
 
-追跡制御修正：2026-10-09。スマートフォン実機での確認前です。
+追跡制御修正：2026-10-09。利用者から実機で安定性が向上したとの報告あり。
+今回の追加変更：認識用図面画像の左下をBlender原点とする配置を実装。確認用数値表示は維持。
+追加変更後の実機動作は未確認です。
 変更点・検証結果・スマホでの確認手順は `UPDATE_NOTES.md` を参照してください。
+Blenderでの配置・書き出し・台帳の設定方法は `ALIGNMENT_DESIGN.md` を参照してください。
 
 紙の図面にスマホをかざすと、対応する3Dモデル・資料情報・アノテーションが出る静的サイト。
 サーバー処理なし。ライブラリはすべて `lib/` に同梱し、外部への通信はしない。
+
+ARでは図面に対するモデルの配置を閲覧者が変更しない。スマホの移動には追従するが、
+指での回転・拡大縮小は行わない。画像左下＝Blender原点、右＝＋X、上＝＋Y、紙面から上＝＋Z。
+ARではモデルの中心や外寸による配置調整を行わず、制作時の座標を保持する。
 
 ## 構成
 
@@ -39,12 +46,14 @@ lib/ js/ css/       同梱ライブラリと本体
 
 ## 図面を追加する
 
-1. モデルを軽くする（目安：テクスチャ 2048px 以下、5MB 前後）。
+1. `ALIGNMENT_DESIGN.md` に従って図面左下をBlender原点に置き、モデルを合わせてGLBを書き出す。
+   モデルを軽くする場合も、その配置を保つ（目安：テクスチャ 2048px 以下、5MB 前後）。
    `npx @gltf-transform/cli resize in.glb a.glb --width 2048 --height 2048`
    `npx @gltf-transform/cli draco a.glb model.glb`
 2. `data/<id>/` に `model.glb`、`meta.json`、`annotations.json` を置く。
 3. 図面画像を `targets/src/<id>.jpg` に置く。**印刷するものと同じ画像**を使う。
-4. `data/items.json` に1件足す。`targetIndex` は 0 から順に重複なく振る。
+4. `data/items.json` に1件足す。図面の `blenderWidth` とモデルの `coordinateSystem` を記録する。
+   `targetIndex` は 0 から順に重複なく振る。
 5. `tools/` を開き「作成する」→ 保存した `all.mind` を `targets/all.mind` に置き換える。
 6. 同じページでQRコードを作り、図面に添えて印刷する。
 
@@ -58,25 +67,28 @@ lib/ js/ css/       同梱ライブラリと本体
 | `targetIndex` | `all.mind` の中での順番（0始まり） |
 | `target.source` | 図面画像の場所 |
 | `target.widthPx` / `heightPx` | 図面画像の画素数。置き場所の計算に使う |
-| `target.printWidthMm` | 印刷した図面の幅（mm）。縮尺を合わせるときだけ必要 |
+| `target.blenderWidth` | Blender内の図面画像の横幅。既定1。単位スケール1で配置・書き出す |
 | `model.src` | モデルの場所 |
-| `model.rotationDeg` | 向きの補正 `[x, y, z]`（度）。上が +Y になるようにする |
-| `model.metersPerUnit` | モデルの1単位が何mか。縮尺を合わせるときだけ必要 |
-| `display.mode` | `stand`＝紙の上に立たせる／`lay`＝図に重ねて寝かせる |
-| `display.anchor` | 置き場所。図面の左上が `[0,0]`、右下が `[1,1]` |
-| `display.size` | `{"type":"fit","value":0.35}`＝図面幅の35%の大きさで出す／`{"type":"scale","value":0.3333}`＝図面と同じ縮尺（この例は1/3）で出す |
+| `model.coordinateSystem` | 標準の＋Y Up GLBは `gltf-y-up`（既定）。＋Z Upのまま保存したGLBは `blender-z-up` |
+| `model.rotationDeg` | 旧データ向けの通常ビュー専用補正。ARでは使用しない |
 | `meta` / `annotations` | それぞれのJSONの場所（省略可） |
 
 `site.title` と `site.lead` は一覧の見出し。
+
+旧 `display.mode`、`display.anchor`、`display.size`、`target.printWidthMm`、`model.metersPerUnit` はAR配置に使用しない。
+同梱の試験用GLBは＋Z Upで、左下原点に合わせ直したデータではない。負の座標もそのまま表示される。
+新しい標準GLBへ差し替えるときは `model.coordinateSystem` を `gltf-y-up` に変更する。
 
 ## 追跡の調整
 
 モデルが揺れる・消えるときは、カメラ起動画面の「確認用の数値を表示」にチェックを入れる。
 URLを変える必要はない。従来の `ar.html?debug=1` も使える。
-表示の先頭に「追跡修正 2026-10-09」と出れば、この修正が読み込まれている。
+「原点配置 2026-10-10：画像左下＝Blender原点」と出れば、今回の変更が読み込まれている。
 
 | 表示 | 見方 |
 |---|---|
+| 図面幅 / 軸 | Blender内の図面幅と、GLBの座標設定 |
+| モデル範囲 X / Y / Z | Blender座標でモデルの形状が占める範囲。負の値がある場合もアプリは移動・切り詰めしない |
 | 認識 n回/秒 | 追跡処理の速さ。10を下回ると動きに追いつけず見失いやすい |
 | 手がかり n点 → 採用 m点 / 必要 6点 | 目印の一致数と、食い違う点を除外したあとの採用数。開始・継続とも採用6点以上が必要 |
 | 最終姿勢から n ms | 最後に追跡姿勢が届いてからの時間。数値が増え続ける間は姿勢が更新されていない |

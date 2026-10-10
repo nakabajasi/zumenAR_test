@@ -4,8 +4,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   loadCatalog, itemFromQuery, fetchJson, loadItemObject, addLights,
   buildAnnotations, pickAnnotation, syncLineResolution,
-} from './common.js';
-import { createPanel } from './panel.js';
+} from './common.js?rev=blender-origin-1';
+import { createPanel } from './panel.js?rev=blender-origin-1';
 
 const stage = document.getElementById('stage');
 const hint = document.getElementById('hint');

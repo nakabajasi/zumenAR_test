@@ -7,8 +7,9 @@ import { MindARThree } from '../lib/mindar/mindar-image-three.prod.js';
 import {
   url, loadCatalog, itemFromQuery, fetchJson, isInAppBrowser, loadItemObject, addLights,
   buildAnnotations, pickAnnotation, syncLineResolution,
-} from './common.js';
-import { createPanel } from './panel.js';
+} from './common.js?rev=blender-origin-1';
+import { createDrawingPlacement, blenderBounds } from './placement.js?rev=blender-origin-1';
+import { createPanel } from './panel.js?rev=blender-origin-1';
 import { PoseStabilizer } from './stabilizer.js?rev=tracking-fix-20261009';
 import { disposeController } from './controller-lifecycle.js?rev=tracking-fix-20261009';
 
@@ -20,7 +21,6 @@ const showHint = (text) => { hint.textContent = text || ''; hint.hidden = !text;
 const SCAN_HINT = '図面が画面いっぱいになるように近づけてください';
 const HOLD_HINT = '図面を見失いました。図面を画面いっぱいに映すと再開します';
 const KEEP_LOADED = 2;   // 同時に持つモデルの数。iPhoneのメモリ不足を避ける
-const DEFAULT_FIT = 0.35;
 
 let mindar = null;
 let running = false;
@@ -32,36 +32,18 @@ let debug = new URLSearchParams(location.search).has('debug');
 
 /* ---------- 置き方 ---------- */
 
-// 図面の幅を1としたときの、モデル最大寸法の大きさ
-function displayScale(item, model) {
-  const size = (item.display && item.display.size) || { type: 'fit', value: DEFAULT_FIT };
-  if (size.type === 'scale') {
-    // 図面と同じ縮尺で出す：実寸(mm)×縮尺 ÷ 印刷した図面の幅(mm)
-    const printWidth = item.target.printWidthMm;
-    const metersPerUnit = item.model.metersPerUnit;
-    if (printWidth && metersPerUnit) return (model.maxDim * metersPerUnit * 1000 * size.value) / printWidth;
-    console.warn(`${item.id}: 縮尺で出すには target.printWidthMm と model.metersPerUnit が必要です`);
-    return DEFAULT_FIT;
-  }
-  return size.value;
-}
-
 function makeSlot(item) {
   const anchor = mindar.addAnchor(item.targetIndex); // MindAR が出す生の姿勢（そのままでは細かく揺れる）
-  const aspect = item.target.heightPx / item.target.widthPx;
-  const [u, v] = (item.display && item.display.anchor) || [0.5, 0.5];
+  const placement = createDrawingPlacement(item);
   const root = new THREE.Group();   // なめらかにした姿勢。モデルはこちらに入れる
   root.visible = false;
-  const place = new THREE.Group();  // 図面上の置き場所（左上が0,0・右下が1,1）
-  place.position.set(u - 0.5, (0.5 - v) * aspect, 0);
-  const user = new THREE.Group();   // 指での回転・拡大
-  place.add(user);
+  const place = placement.group;   // 図面左下＝Blender原点。大きさは図面幅だけで決める
   root.add(place);
   mindar.scene.add(root);
   const slot = {
-    item, anchor, root, user, stabilizer: new PoseStabilizer(tracking),
+    item, anchor, root, place, placement, stabilizer: new PoseStabilizer(tracking),
     sample: { id: 0, at: 0 },
-    pose: null, model: null, annotations: null, meta: null, loading: null, usedAt: 0,
+    model: null, annotations: null, meta: null, bounds: null, loading: null, usedAt: 0,
   };
   anchor.onTargetFound = () => onFound(slot);
   anchor.onTargetLost = () => onLost(slot);
@@ -76,26 +58,15 @@ function ensureLoaded(slot) {
   if (slot.loading) return slot.loading;
   const { item } = slot;
   slot.loading = Promise.all([
-    loadItemObject(item, (p) => { if (current === slot || !current) showHint(`モデルを読み込み中… ${Math.round(p * 100)}%`); }),
+    loadItemObject(item, (p) => { if (current === slot || !current) showHint(`モデルを読み込み中… ${Math.round(p * 100)}%`); }, { preservePlacement: true }),
     item.meta ? fetchJson(item.meta).catch(() => null) : null,
     item.annotations ? fetchJson(item.annotations).catch(() => null) : null,
   ]).then(([model, meta, annoData]) => {
-    const mode = (item.display && item.display.mode) || 'stand';
-    const k = displayScale(item, model);
-    const pose = new THREE.Group();
-    pose.scale.setScalar(k);
-    if (mode === 'lay') {
-      // 図に重ねて寝かせる：モデルの上を図面の上に向け、中心を置き場所に合わせる
-      pose.position.set(0, (-model.unitSize.y / 2) * k, (model.unitSize.z / 2) * k);
-    } else {
-      // 紙の上に立たせる：モデルの上を紙から手前へ向ける
-      pose.rotation.x = Math.PI / 2;
-    }
-    pose.add(model.unit);
-    slot.user.add(pose);
+    const bounds = blenderBounds(model, slot.placement.coordinateSystem);
+    slot.place.add(model.unit);
     const annotations = buildAnnotations(annoData, model.maxDim);
     model.raw.add(annotations.group);
-    Object.assign(slot, { model, meta, annotations, pose, mode, loading: null });
+    Object.assign(slot, { model, meta, annotations, bounds, loading: null });
     releaseOld(slot);
     return slot;
   }).catch((err) => {
@@ -111,10 +82,10 @@ function releaseOld(keep) {
   const loaded = slots.filter((s) => s.model && s !== keep && s !== current).sort((a, b) => a.usedAt - b.usedAt);
   while (loaded.length > KEEP_LOADED - 1) {
     const s = loaded.shift();
-    s.user.remove(s.pose);
+    s.place.remove(s.model.unit);
     s.annotations.dispose();
     s.model.dispose();
-    s.model = s.annotations = s.pose = null;
+    s.model = s.annotations = s.bounds = null;
   }
 }
 
@@ -147,50 +118,34 @@ function onLost(slot) {
   $('recover').hidden = false; // 戻しても再開しないときに、読み込み直さずやり直せるようにする
 }
 
-/* ---------- 指の操作 ---------- */
+/* ---------- アノテーションのタップ選択 ---------- */
 
-function setupGestures() {
-  const pointers = new Map();
-  let pinch = null;
+// モデルの位置・向き・倍率は制作時の設定に従う。指では変更しない。
+function setupAnnotationTaps() {
+  const pointers = new Set();
   let tap = null;
-
-  const spread = () => {
-    const [a, b] = [...pointers.values()];
-    return Math.hypot(a.x - b.x, a.y - b.y);
-  };
 
   stage.addEventListener('pointerdown', (e) => {
     stage.setPointerCapture(e.pointerId);
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    tap = pointers.size === 1 ? { x: e.clientX, y: e.clientY, t: e.timeStamp } : null;
-    pinch = pointers.size === 2 && current && current.model ? { dist: spread(), scale: current.user.scale.x } : null;
+    pointers.add(e.pointerId);
+    tap = pointers.size === 1
+      ? { id: e.pointerId, x: e.clientX, y: e.clientY, t: e.timeStamp, slot: current }
+      : null;
   });
 
   stage.addEventListener('pointermove', (e) => {
-    const p = pointers.get(e.pointerId);
-    if (!p) return;
-    const dx = e.clientX - p.x;
-    p.x = e.clientX; p.y = e.clientY;
-    if (!current || !current.model) return;
-    if (pointers.size === 1) {
-      // 横になぞると、モデルの軸まわりに回る
-      const axis = current.mode === 'lay' ? 'y' : 'z';
-      current.user.rotation[axis] += dx * 0.01;
-    } else if (pinch) {
-      const s = THREE.MathUtils.clamp(pinch.scale * (spread() / pinch.dist), 0.3, 4);
-      current.user.scale.setScalar(s);
-    }
+    if (tap && tap.id === e.pointerId && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > 8) tap = null;
   });
 
   const end = (e) => {
     if (!pointers.has(e.pointerId)) return;
     pointers.delete(e.pointerId);
-    pinch = null;
-    if (e.type !== 'pointerup' || !tap) return;
-    const moved = Math.hypot(e.clientX - tap.x, e.clientY - tap.y);
-    const quick = e.timeStamp - tap.t < 400; // 処理が混んでいても正しく測れるよう、指が触れた時刻そのもので比べる
+    const candidate = tap;
     tap = null;
-    if (moved > 8 || !quick || !current || !current.model || !current.root.visible) return;
+    if (e.type !== 'pointerup' || !candidate || candidate.id !== e.pointerId) return;
+    const moved = Math.hypot(e.clientX - candidate.x, e.clientY - candidate.y);
+    const quick = e.timeStamp - candidate.t < 400; // 処理が混んでいても、指が触れた時刻そのもので比べる
+    if (moved > 8 || !quick || current !== candidate.slot || !current || !current.model || !current.root.visible) return;
     const entry = pickAnnotation(e.clientX, e.clientY, mindar.renderer.domElement, mindar.camera, current.annotations, current.model);
     current.annotations.select(entry);
     panel.showSelection(entry);
@@ -251,9 +206,14 @@ function updateDebug(now) {
   }
   const t = trackingStats;
   const v = mindar.video;
+  const b = current && current.bounds;
+  const range = (axis) => b ? `${b.min[axis].toFixed(3)}〜${b.max[axis].toFixed(3)}` : '-';
   debugBox.hidden = false;
   debugBox.textContent = [
     '追跡修正 2026-10-09',
+    '原点配置 2026-10-10：画像左下＝Blender原点',
+    `図面幅 ${current ? current.placement.width : '-'} / 軸 ${current ? current.placement.coordinateSystem : '-'}`,
+    `モデル範囲 X ${range('x')}  Y ${range('y')}  Z ${range('z')}`,
     `状態 ${t.state}${current && current.stabilizer.held ? '（固定表示）' : ''}`,
     `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,
     `手がかり ${t.points}点 → 採用 ${t.used}点 / 必要 ${tracking.minPoints}点`,
@@ -334,7 +294,7 @@ async function start(catalog, preferred) {
   }
   running = true;
   mindar.renderer.setAnimationLoop(render);
-  setupGestures();
+  setupAnnotationTaps();
 
   // QRで資料を指定して開いた場合は、認識を待たずにそのモデルを先に読み込んでおく
   const first = preferred && slots.find((s) => s.item.id === preferred.id);
@@ -372,11 +332,6 @@ async function main() {
     $('btn-mode').setAttribute('aria-pressed', String(shape));
   });
   $('btn-rescan').addEventListener('click', () => (running ? restart() : location.reload()));
-  $('btn-reset').addEventListener('click', () => {
-    if (!current) return;
-    current.user.rotation.set(0, 0, 0);
-    current.user.scale.setScalar(1);
-  });
 
   const startBtn = $('btn-start');
   const errorBox = $('gate-error');

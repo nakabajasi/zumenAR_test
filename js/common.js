@@ -5,6 +5,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { prepareModelFrame } from './placement.js?rev=blender-origin-1';
 
 // サイトの最上位フォルダ。GitHub Pages の /リポジトリ名/ 配下でも動くよう相対で解決する
 const ROOT = new URL('..', import.meta.url);
@@ -46,34 +47,16 @@ const SHAPE_COLOR = 0xcbc3b4;
 
 /**
  * モデルを読み込み、次の入れ子にして返す。
- *   unit     … 底面中心が原点、上が+Y、最大寸法が1（置き場所や倍率はこの外側で決める）
- *   └ oriented … 台帳の rotationDeg による向きの補正
+ *   unit     … 通常ビューでは最大寸法1。ARでは配置を保持する。
+ *   └ oriented … 通常ビューだけ向き・中心・大きさを補正。ARでは恒等変換。
  *      └ raw   … GLBの座標そのまま。アノテーションはここに入れる
  */
-export async function loadItemObject(item, onProgress) {
+export async function loadItemObject(item, onProgress, options = {}) {
   const gltf = await gltfLoader.loadAsync(url(item.model.src), (e) => {
     if (onProgress && e.total) onProgress(e.loaded / e.total);
   });
 
-  const raw = new THREE.Group();
-  raw.add(gltf.scene);
-
-  const oriented = new THREE.Group();
-  const [rx, ry, rz] = (item.model.rotationDeg || [0, 0, 0]).map(THREE.MathUtils.degToRad);
-  oriented.rotation.set(rx, ry, rz);
-  oriented.add(raw);
-  oriented.updateMatrixWorld(true);
-
-  const box = new THREE.Box3().setFromObject(oriented);
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z) || 1;
-  const s = 1 / maxDim;
-  oriented.scale.setScalar(s);
-  oriented.position.set(-center.x * s, -box.min.y * s, -center.z * s);
-
-  const unit = new THREE.Group();
-  unit.add(oriented);
+  const frame = prepareModelFrame(gltf.scene, item, options);
 
   // 表示の切り替え：photo＝写真の色をそのまま（光の計算なし）／shape＝色を外して形だけ
   const meshes = [];
@@ -118,9 +101,7 @@ export async function loadItemObject(item, onProgress) {
   }
 
   return {
-    unit, raw, size, maxDim, triangles,
-    // 単位化後の外寸（最大寸法＝1）。置き方の計算に使う
-    unitSize: size.clone().multiplyScalar(s),
+    ...frame, triangles,
     get mode() { return mode; },
     setMode, dispose,
   };
@@ -159,7 +140,7 @@ export function buildAnnotations(data, maxDim) {
   const group = new THREE.Group();
   const layers = [];
   const pickables = [];
-  if (!data || !Array.isArray(data.layers)) return { group, layers, pickables, select() {} };
+  if (!data || !Array.isArray(data.layers)) return { group, layers, pickables, select() {}, dispose() {} };
 
   const r = maxDim * 0.011;
   const sphereGeo = new THREE.SphereGeometry(r, 20, 14);
@@ -244,7 +225,8 @@ export function pickAnnotation(clientX, clientY, dom, camera, annotations, model
   if (!hit) return null;
   const surface = raycaster.intersectObject(model.raw.children[0], true)[0];
   if (surface) {
-    const slack = model.unit.getWorldScale(_scale).x * 0.06; // モデル最大寸法の6%までの前後差は同じ場所とみなす
+    const extent = Math.max(model.unitSize.x, model.unitSize.y, model.unitSize.z);
+    const slack = model.unit.getWorldScale(_scale).x * extent * 0.06; // 配置保持時もモデル最大寸法の6%
     if (surface.distance < hit.distance - slack) return null;
   }
   return hit.object.userData.entry;

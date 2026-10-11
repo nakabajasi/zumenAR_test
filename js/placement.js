@@ -1,6 +1,9 @@
 // 図面左下＝Blender原点。モデルの外寸・中心から配置を決めない。
 import * as THREE from 'three';
 
+// 入力寸法の丸めを許容する範囲。大きく違う場合は縦横別倍率で形を変えず、設定エラーにする。
+const ASPECT_TOLERANCE = 0.01;
+
 export function modelCoordinateSystem(item) {
   const value = item.model.coordinateSystem ?? 'gltf-y-up';
   if (value !== 'gltf-y-up' && value !== 'blender-z-up') {
@@ -17,18 +20,27 @@ function positive(value, name, item) {
 }
 
 export function createDrawingPlacement(item) {
-  const widthPx = positive(item.target.widthPx, 'target.widthPx', item);
-  const heightPx = positive(item.target.heightPx, 'target.heightPx', item);
-  const width = positive(item.target.blenderWidth ?? 1, 'target.blenderWidth', item);
+  const target = item.target || {};
+  const widthPx = positive(target.widthPx, 'target.widthPx', item);
+  const heightPx = positive(target.heightPx, 'target.heightPx', item);
+  // 単位はm。省略時に仮の寸法を当てはめず、縦横とも明示入力を必須にする。
+  const width = positive(target.realWidthM, 'target.realWidthM（画像全体の実寸幅・m）', item);
+  const height = positive(target.realHeightM, 'target.realHeightM（画像全体の実寸高さ・m）', item);
   const aspect = heightPx / widthPx;
+  const aspectError = Math.abs((height / width) / aspect - 1);
+  if (!Number.isFinite(aspectError) || aspectError > ASPECT_TOLERANCE) {
+    throw new Error(`${item.id}: 画像（${widthPx}×${heightPx}px）と実寸（${width}×${height}m）の縦横比が1%を超えて異なります。余白を含む画像全体の寸法を確認してください`);
+  }
   const coordinateSystem = modelCoordinateSystem(item);
   const group = new THREE.Group();
   // MindARのアンカーは画像中心・幅1。固定の変換で画像左下へ移す。
   group.position.set(-0.5, -aspect / 2, 0);
+  // 縦横比の一致を確認した上で、XYZすべてを横幅に基づく共通倍率で変換する。
+  // 認識に使われた図柄の範囲・モデルの外寸・印刷物のmm幅からは計算しない。
   group.scale.setScalar(1 / width);
   // 標準GLBの (x,y,z) → Blenderの (x,-z,y)。モデルの向きの再調整ではない。
   if (coordinateSystem === 'gltf-y-up') group.rotation.x = Math.PI / 2;
-  return { group, width, height: width * aspect, coordinateSystem };
+  return { group, width, height, aspectError, coordinateSystem };
 }
 
 /**

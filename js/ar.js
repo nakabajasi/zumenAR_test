@@ -7,9 +7,9 @@ import { MindARThree } from '../lib/mindar/mindar-image-three.prod.js';
 import {
   url, loadCatalog, itemFromQuery, fetchJson, isInAppBrowser, loadItemObject, addLights,
   buildAnnotations, pickAnnotation, syncLineResolution,
-} from './common.js?rev=blender-origin-1';
-import { createDrawingPlacement, blenderBounds } from './placement.js?rev=blender-origin-1';
-import { createPanel } from './panel.js?rev=blender-origin-1';
+} from './common.js?rev=drawing-dimensions-1';
+import { createDrawingPlacement, blenderBounds } from './placement.js?rev=drawing-dimensions-1';
+import { createPanel } from './panel.js?rev=drawing-dimensions-1';
 import { PoseStabilizer } from './stabilizer.js?rev=tracking-fix-20261009';
 import { disposeController } from './controller-lifecycle.js?rev=tracking-fix-20261009';
 
@@ -32,12 +32,11 @@ let debug = new URLSearchParams(location.search).has('debug');
 
 /* ---------- 置き方 ---------- */
 
-function makeSlot(item) {
+function makeSlot(item, placement) {
   const anchor = mindar.addAnchor(item.targetIndex); // MindAR が出す生の姿勢（そのままでは細かく揺れる）
-  const placement = createDrawingPlacement(item);
   const root = new THREE.Group();   // なめらかにした姿勢。モデルはこちらに入れる
   root.visible = false;
-  const place = placement.group;   // 図面左下＝Blender原点。大きさは図面幅だけで決める
+  const place = placement.group;   // 図面左下＝Blender原点。入力した実寸で大きさを決める
   root.add(place);
   mindar.scene.add(root);
   const slot = {
@@ -208,11 +207,13 @@ function updateDebug(now) {
   const v = mindar.video;
   const b = current && current.bounds;
   const range = (axis) => b ? `${b.min[axis].toFixed(3)}〜${b.max[axis].toFixed(3)}` : '-';
+  const dimensions = current ? `${Number(current.placement.width.toPrecision(8))} × ${Number(current.placement.height.toPrecision(8))} m` : '-';
   debugBox.hidden = false;
   debugBox.textContent = [
     '追跡修正 2026-10-09',
-    '原点配置 2026-10-10：画像左下＝Blender原点',
-    `図面幅 ${current ? current.placement.width : '-'} / 軸 ${current ? current.placement.coordinateSystem : '-'}`,
+    '実寸設定 2026-10-11：画像左下＝Blender原点',
+    `図面全体 幅×高さ ${dimensions}`,
+    `軸 ${current ? current.placement.coordinateSystem : '-'} / 縦横比差 ${current ? (current.placement.aspectError * 100).toFixed(3) : '-'}%`,
     `モデル範囲 X ${range('x')}  Y ${range('y')}  Z ${range('z')}`,
     `状態 ${t.state}${current && current.stabilizer.held ? '（固定表示）' : ''}`,
     `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,
@@ -263,6 +264,8 @@ async function start(catalog, preferred) {
     throw new Error('このブラウザではカメラを使えません。SafariかChromeで開いてください。');
   }
   stage.innerHTML = ''; // やり直しのときに前回の映像・描画面を残さない
+  // 設定ミスはカメラや追跡用リソースを作る前に起動画面へ返す。
+  const placements = catalog.items.map(createDrawingPlacement);
 
   // 追跡の設定：既定値 ← 台帳の tracking ← URL（例 ar.html?debug=1&stillCutoff=0.3）
   Object.assign(tracking, catalog.tracking || {});
@@ -285,7 +288,7 @@ async function start(catalog, preferred) {
     showHint('表示が止まりました。ページを読み込み直してください');
   });
   addLights(mindar.scene);
-  slots = catalog.items.map(makeSlot);
+  slots = catalog.items.map((item, index) => makeSlot(item, placements[index]));
 
   try {
     await mindar.start();

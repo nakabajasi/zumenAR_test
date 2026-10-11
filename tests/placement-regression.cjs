@@ -19,7 +19,7 @@ function link(spec, parent) {
 function near(actual, expected, label) {
   for (let i=0;i<expected.length;i++) assert(Math.abs(actual[i]-expected[i]) < 1e-6, `${label}: ${actual} != ${expected}`);
 }
-const item = (axis='gltf-y-up', width=1, pixels=[1847,1238]) => ({id:'test',model:{coordinateSystem:axis},target:{widthPx:pixels[0],heightPx:pixels[1],blenderWidth:width}});
+const item = (axis='gltf-y-up', width=1, pixels=[1847,1238]) => ({id:'test',model:{coordinateSystem:axis},target:{widthPx:pixels[0],heightPx:pixels[1],realWidthM:width,realHeightM:width*pixels[1]/pixels[0]}});
 
 // Blender頂点・ノードを標準GLBのY-up座標で記録した小さな実ファイルをメモリ内で構成する。
 function makeGLB() {
@@ -93,11 +93,31 @@ function makeGLB() {
   viewer.unit.updateMatrixWorld(true);
   const vb=new T.Box3().setFromObject(viewer.unit), vs=vb.getSize(new T.Vector3());
   near([vb.min.y,Math.max(vs.x,vs.y,vs.z)],[0,1],'通常ビューの自動フィットは維持');
-  for(const bad of [0,-1,NaN,Infinity,'1',null]) {
-    const cfg=item(); cfg.target.widthPx=bad; assert.throws(()=>createDrawingPlacement(cfg));
-    cfg.target.widthPx=1847; cfg.target.blenderWidth=bad;
-    if(bad!==null)assert.throws(()=>createDrawingPlacement(cfg));
+  // 利用者の例：全体40m×30m、点(10,15,2)は左から25%、下から50%、高さ2m相当。
+  const metric=item('blender-z-up',40,[4000,3000]);
+  const mapped=createDrawingPlacement(metric); mapped.group.updateMatrixWorld(true);
+  near(new T.Vector3(10,15,2).applyMatrix4(mapped.group.matrixWorld).toArray(),[-.25,0,.05],'実寸から画像内位置への対応');
+  assert.equal(mapped.width,40); assert.equal(mapped.height,30);
+  // 古い幅を残しても、新しい縦横の値を使う。
+  metric.target.blenderWidth=999;
+  near(createDrawingPlacement(metric).group.scale.toArray(),[.025,.025,.025],'実寸値を使用');
+  // 数値の丸めは許容するが形状は変えない。高さの違いが1%を超える場合は明確に失敗する。
+  metric.target.realHeightM=30.15;
+  const rounded=createDrawingPlacement(metric);
+  near(rounded.group.scale.toArray(),[.025,.025,.025],'縦横別に拡縮しない');
+  assert(rounded.aspectError > .004 && rounded.aspectError < .006);
+  metric.target.realHeightM=30.6;
+  assert.throws(()=>createDrawingPlacement(metric),/縦横比/);
+  metric.target.realHeightM=29.4;
+  assert.throws(()=>createDrawingPlacement(metric),/縦横比/);
+  for(const field of ['widthPx','heightPx','realWidthM','realHeightM']) for(const bad of [0,-1,NaN,Infinity,'1',null,undefined]) {
+    const cfg=item(); cfg.target[field]=bad;
+    assert.throws(()=>createDrawingPlacement(cfg),new RegExp(field));
   }
+  const legacy=item(); delete legacy.target.realWidthM; delete legacy.target.realHeightM; legacy.target.blenderWidth=1;
+  assert.throws(()=>createDrawingPlacement(legacy),/realWidthM/,'旧設定だけでは仮寸法を使わない');
   assert.throws(()=>createDrawingPlacement(item('unknown')));
-  console.log('PASS: 横長/縦長、任意幅、図面四隅、正負XYZ、標準GLB読込、親子変換、外寸非依存、注釈座標、通常ビュー、入力検証');
+  const catalog=JSON.parse(fs.readFileSync(path.join(root,'data/items.json'),'utf8'));
+  for(const entry of catalog.items)createDrawingPlacement(entry);
+  console.log('PASS: 実寸の縦横、必須入力、縦横比検証、形状保持、図面四隅、正負XYZ、GLB読込、親子変換、外寸非依存、注釈座標、通常ビュー');
 })().catch(err=>{console.error(err);process.exitCode=1;});

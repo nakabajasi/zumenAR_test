@@ -1,7 +1,7 @@
 # 図面AR（試作）
 
 追跡制御修正：2026-10-09。利用者から実機で安定性が向上したとの報告あり。
-今回の追加変更：認識用図面画像の左下をBlender原点とする配置を実装。確認用数値表示は維持。
+今回の追加変更：認識用画像全体の実寸幅・実寸高さを台帳へ直接入力する方式に変更。確認用数値表示は維持。
 追加変更後の実機動作は未確認です。
 変更点・検証結果・スマホでの確認手順は `UPDATE_NOTES.md` を参照してください。
 Blenderでの配置・書き出し・台帳の設定方法は `ALIGNMENT_DESIGN.md` を参照してください。
@@ -12,6 +12,22 @@ Blenderでの配置・書き出し・台帳の設定方法は `ALIGNMENT_DESIGN.
 ARでは図面に対するモデルの配置を閲覧者が変更しない。スマホの移動には追従するが、
 指での回転・拡大縮小は行わない。画像左下＝Blender原点、右＝＋X、上＝＋Y、紙面から上＝＋Z。
 ARではモデルの中心や外寸による配置調整を行わず、制作時の座標を保持する。
+画像外周に枠線は不要。内側の図柄で認識し、元画像全体の左下と入力寸法を配置基準にする。
+
+## 実寸の入力
+
+`data/items.json` の各資料の `target` 内に、画像全体に対応する実寸の幅・高さをm単位で記入する。
+
+```json
+"realWidthM": 40.0,
+"realHeightM": 30.0
+```
+
+上は横40m・縦30mの例。印刷した紙の大きさや、図柄だけの寸法ではなく、余白を含む画像全体の値を入力する。
+Blenderも同じ実寸・m単位・左下原点で配置する。縦横とも必須で、旧 `blenderWidth` は使用しない。
+同梱の1m×約0.670276mは試験用の仮寸法なので、実際の値に書き換える。
+画像と入力値の縦横比が1%を超えて違うと、AR起動画面にエラーを表示する。
+1%以内の丸め差は許容し、モデルのXYZへ横幅基準の共通倍率を使う。
 
 ## 構成
 
@@ -52,7 +68,7 @@ lib/ js/ css/       同梱ライブラリと本体
    `npx @gltf-transform/cli draco a.glb model.glb`
 2. `data/<id>/` に `model.glb`、`meta.json`、`annotations.json` を置く。
 3. 図面画像を `targets/src/<id>.jpg` に置く。**印刷するものと同じ画像**を使う。
-4. `data/items.json` に1件足す。図面の `blenderWidth` とモデルの `coordinateSystem` を記録する。
+4. `data/items.json` に1件足す。画像全体の `realWidthM`・`realHeightM` とモデルの `coordinateSystem` を記録する。
    `targetIndex` は 0 から順に重複なく振る。
 5. `tools/` を開き「作成する」→ 保存した `all.mind` を `targets/all.mind` に置き換える。
 6. 同じページでQRコードを作り、図面に添えて印刷する。
@@ -67,7 +83,8 @@ lib/ js/ css/       同梱ライブラリと本体
 | `targetIndex` | `all.mind` の中での順番（0始まり） |
 | `target.source` | 図面画像の場所 |
 | `target.widthPx` / `heightPx` | 図面画像の画素数。置き場所の計算に使う |
-| `target.blenderWidth` | Blender内の図面画像の横幅。既定1。単位スケール1で配置・書き出す |
+| `target.realWidthM` | 画像全体の実寸幅（m）。必須。Blenderの図面幅もこの値にする |
+| `target.realHeightM` | 画像全体の実寸高さ（m）。必須。Blenderの図面高さもこの値にする |
 | `model.src` | モデルの場所 |
 | `model.coordinateSystem` | 標準の＋Y Up GLBは `gltf-y-up`（既定）。＋Z Upのまま保存したGLBは `blender-z-up` |
 | `model.rotationDeg` | 旧データ向けの通常ビュー専用補正。ARでは使用しない |
@@ -75,7 +92,7 @@ lib/ js/ css/       同梱ライブラリと本体
 
 `site.title` と `site.lead` は一覧の見出し。
 
-旧 `display.mode`、`display.anchor`、`display.size`、`target.printWidthMm`、`model.metersPerUnit` はAR配置に使用しない。
+旧 `display.mode`、`display.anchor`、`display.size`、`target.printWidthMm`、`target.blenderWidth`、`model.metersPerUnit` はAR配置に使用しない。
 同梱の試験用GLBは＋Z Upで、左下原点に合わせ直したデータではない。負の座標もそのまま表示される。
 新しい標準GLBへ差し替えるときは `model.coordinateSystem` を `gltf-y-up` に変更する。
 
@@ -83,11 +100,12 @@ lib/ js/ css/       同梱ライブラリと本体
 
 モデルが揺れる・消えるときは、カメラ起動画面の「確認用の数値を表示」にチェックを入れる。
 URLを変える必要はない。従来の `ar.html?debug=1` も使える。
-「原点配置 2026-10-10：画像左下＝Blender原点」と出れば、今回の変更が読み込まれている。
+「実寸設定 2026-10-11：画像左下＝Blender原点」と出れば、今回の変更が読み込まれている。
 
 | 表示 | 見方 |
 |---|---|
-| 図面幅 / 軸 | Blender内の図面幅と、GLBの座標設定 |
+| 図面全体 幅×高さ / 軸 | 入力した実寸幅・高さ（m）と、GLBの座標設定 |
+| 縦横比差 | 画像と入力実寸の縦横比の差。1%以内の丸め差は許容 |
 | モデル範囲 X / Y / Z | Blender座標でモデルの形状が占める範囲。負の値がある場合もアプリは移動・切り詰めしない |
 | 認識 n回/秒 | 追跡処理の速さ。10を下回ると動きに追いつけず見失いやすい |
 | 手がかり n点 → 採用 m点 / 必要 6点 | 目印の一致数と、食い違う点を除外したあとの採用数。開始・継続とも採用6点以上が必要 |

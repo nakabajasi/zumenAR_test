@@ -5,7 +5,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { prepareModelFrame } from './placement.js?rev=blender-origin-1';
+import { prepareModelFrame } from './placement.js?rev=drawing-dimensions-1';
 
 // サイトの最上位フォルダ。GitHub Pages の /リポジトリ名/ 配下でも動くよう相対で解決する
 const ROOT = new URL('..', import.meta.url);

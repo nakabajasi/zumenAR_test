@@ -4,8 +4,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   loadCatalog, itemFromQuery, fetchJson, loadItemObject, addLights,
   buildAnnotations, pickAnnotation, syncLineResolution,
-} from './common.js?rev=drawing-dimensions-1';
-import { createPanel } from './panel.js?rev=drawing-dimensions-1';
+} from './common.js?rev=drawing-auto-dimensions-1';
+import { createPanel } from './panel.js?rev=drawing-auto-dimensions-1';
 
 const stage = document.getElementById('stage');
 const hint = document.getElementById('hint');

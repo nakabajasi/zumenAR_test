@@ -1,6 +1,6 @@
 // 画面下の情報パネル（AR表示と通常ビューアで共通）
 // ARは手ぶれで空中の文字が読めないので、文字はすべてここに固定して出す
-import { typeLabel } from './common.js?rev=drawing-dimensions-1';
+import { typeLabel } from './common.js?rev=drawing-auto-dimensions-1';
 
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);

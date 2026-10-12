@@ -16,6 +16,7 @@
 
   <h2>1. 認識用データを作る</h2>
   <p>台帳（<span class="mono">data/items.json</span>）に載っている図面画像をまとめて <span class="mono">all.mind</span> にします。できたファイルを <span class="mono">targets/all.mind</span> に置き換えてください。</p>
+  <p>画像の縦横ピクセル数は自動で保存されるため、台帳への入力は不要です。画像を差し替えたら、ここで認識用データを作り直してください。</p>
   <p><button class="btn btn-primary" id="btn-compile" type="button">作成する</button> <a class="btn" id="link-download" hidden>all.mind を保存</a></p>
   <p class="muted" id="compile-status"></p>
   <table class="plain" id="compile-table" hidden>
@@ -32,6 +33,6 @@
   <p class="foot"><a href="../index.html">← 一覧へ</a></p>
 </main>
 <script src="../lib/qrcode.js"></script>
-<script type="module" src="tools.js"></script>
+<script type="module" src="tools.js?rev=drawing-auto-dimensions-1"></script>
 </body>
 </html>

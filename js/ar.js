@@ -7,9 +7,10 @@ import { MindARThree } from '../lib/mindar/mindar-image-three.prod.js';
 import {
   url, loadCatalog, itemFromQuery, fetchJson, isInAppBrowser, loadItemObject, addLights,
   buildAnnotations, pickAnnotation, syncLineResolution,
-} from './common.js?rev=drawing-dimensions-1';
-import { createDrawingPlacement, blenderBounds } from './placement.js?rev=drawing-dimensions-1';
-import { createPanel } from './panel.js?rev=drawing-dimensions-1';
+} from './common.js?rev=drawing-auto-dimensions-1';
+import { createDrawingPlacements, blenderBounds } from './placement.js?rev=drawing-auto-dimensions-1';
+import { loadDrawingTargets } from './drawing-targets.js?rev=drawing-auto-dimensions-1';
+import { createPanel } from './panel.js?rev=drawing-auto-dimensions-1';
 import { PoseStabilizer } from './stabilizer.js?rev=tracking-fix-20261009';
 import { disposeController } from './controller-lifecycle.js?rev=tracking-fix-20261009';
 
@@ -23,6 +24,7 @@ const HOLD_HINT = '図面を見失いました。図面を画面いっぱいに�
 const KEEP_LOADED = 2;   // 同時に持つモデルの数。iPhoneのメモリ不足を避ける
 
 let mindar = null;
+let targetDataUrl = null; // 探し直しでも、配置を検証したものと同じ認識データを使う。
 let running = false;
 let slots = [];
 let current = null;      // いま情報パネルに出している資料
@@ -212,6 +214,7 @@ function updateDebug(now) {
   debugBox.textContent = [
     '追跡修正 2026-10-09',
     '実寸設定 2026-10-11：画像左下＝Blender原点',
+    `画像寸法 自動取得（all.mind） ${current ? `${current.placement.widthPx} × ${current.placement.heightPx} px` : '-'}`,
     `図面全体 幅×高さ ${dimensions}`,
     `軸 ${current ? current.placement.coordinateSystem : '-'} / 縦横比差 ${current ? (current.placement.aspectError * 100).toFixed(3) : '-'}%`,
     `モデル範囲 X ${range('x')}  Y ${range('y')}  Z ${range('z')}`,
@@ -265,7 +268,8 @@ async function start(catalog, preferred) {
   }
   stage.innerHTML = ''; // やり直しのときに前回の映像・描画面を残さない
   // 設定ミスはカメラや追跡用リソースを作る前に起動画面へ返す。
-  const placements = catalog.items.map(createDrawingPlacement);
+  const targets = await loadDrawingTargets(url('targets/all.mind'));
+  const placements = createDrawingPlacements(catalog.items, targets.dimensions);
 
   // 追跡の設定：既定値 ← 台帳の tracking ← URL（例 ar.html?debug=1&stillCutoff=0.3）
   Object.assign(tracking, catalog.tracking || {});
@@ -275,24 +279,35 @@ async function start(catalog, preferred) {
   }
   installTracking(tracking);
 
-  mindar = new MindARThree({
-    container: stage,
-    imageTargetSrc: url('targets/all.mind'),
-    maxTrack: 1,
-    uiLoading: 'no', uiScanning: 'no', uiError: 'no',
-    warmupTolerance: tracking.warmupTolerance,
-  });
-  mindar.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  mindar.renderer.domElement.addEventListener('webglcontextlost', (e) => {
-    e.preventDefault();
-    showHint('表示が止まりました。ページを読み込み直してください');
-  });
-  addLights(mindar.scene);
-  slots = catalog.items.map((item, index) => makeSlot(item, placements[index]));
-
+  if (targetDataUrl) URL.revokeObjectURL(targetDataUrl);
+  targetDataUrl = URL.createObjectURL(new Blob([targets.buffer], { type: 'application/octet-stream' }));
+  // 通信で再取得せず、寸法を確認した同じバイト列をMindARへ渡す。
   try {
+    mindar = new MindARThree({
+      container: stage,
+      imageTargetSrc: targetDataUrl,
+      maxTrack: 1,
+      uiLoading: 'no', uiScanning: 'no', uiError: 'no',
+      warmupTolerance: tracking.warmupTolerance,
+    });
+    mindar.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    mindar.renderer.domElement.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      showHint('表示が止まりました。ページを読み込み直してください');
+    });
+    addLights(mindar.scene);
+    slots = catalog.items.map((item, index) => makeSlot(item, placements[index]));
+
     await mindar.start();
   } catch (err) {
+    mindar?.renderer.setAnimationLoop(null);
+    mindar?.video?.srcObject?.getTracks().forEach((track) => track.stop());
+    mindar?.video?.remove();
+    disposeController(mindar?.controller);
+    mindar?.renderer.dispose();
+    mindar = null;
+    URL.revokeObjectURL(targetDataUrl);
+    targetDataUrl = null;
     throw new Error('カメラを起動できませんでした。ブラウザの設定でこのページのカメラ使用を許可してください。');
   }
   running = true;

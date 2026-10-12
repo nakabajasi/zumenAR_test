@@ -11,8 +11,6 @@
       "subtitle": "遺構配置図にかざすと出ます",
       "target": {
         "source": "targets/src/item01.jpg",
-        "widthPx": 2223,
-        "heightPx": 2484,
         "realWidthM": 19.2,
         "realHeightM": 21.5
       },

@@ -19,17 +19,18 @@ function positive(value, name, item) {
   return value;
 }
 
-export function createDrawingPlacement(item) {
+// dimensionsは認識に使用するall.mindから取得する。台帳の旧画素数は参照しない。
+export function createDrawingPlacement(item, dimensions) {
   const target = item.target || {};
-  const widthPx = positive(target.widthPx, 'target.widthPx', item);
-  const heightPx = positive(target.heightPx, 'target.heightPx', item);
+  const widthPx = positive(dimensions?.[0], 'all.mind内の画像幅（px）', item);
+  const heightPx = positive(dimensions?.[1], 'all.mind内の画像高さ（px）', item);
   // 単位はm。省略時に仮の寸法を当てはめず、縦横とも明示入力を必須にする。
   const width = positive(target.realWidthM, 'target.realWidthM（画像全体の実寸幅・m）', item);
   const height = positive(target.realHeightM, 'target.realHeightM（画像全体の実寸高さ・m）', item);
   const aspect = heightPx / widthPx;
   const aspectError = Math.abs((height / width) / aspect - 1);
   if (!Number.isFinite(aspectError) || aspectError > ASPECT_TOLERANCE) {
-    throw new Error(`${item.id}: 画像（${widthPx}×${heightPx}px）と実寸（${width}×${height}m）の縦横比が1%を超えて異なります。余白を含む画像全体の寸法を確認してください`);
+    throw new Error(`${item.id}: 認識データ内の画像（${widthPx}×${heightPx}px）と実寸（${width}×${height}m）の縦横比が1%を超えて異なります。余白を含む画像全体の実寸を確認してください。画像を差し替えた場合は、管理用ページでall.mindを作り直して置き換えてください`);
   }
   const coordinateSystem = modelCoordinateSystem(item);
   const group = new THREE.Group();
@@ -40,7 +41,19 @@ export function createDrawingPlacement(item) {
   group.scale.setScalar(1 / width);
   // 標準GLBの (x,y,z) → Blenderの (x,-z,y)。モデルの向きの再調整ではない。
   if (coordinateSystem === 'gltf-y-up') group.rotation.x = Math.PI / 2;
-  return { group, width, height, aspectError, coordinateSystem };
+  return { group, width, height, widthPx, heightPx, aspectError, coordinateSystem };
+}
+
+export function createDrawingPlacements(items, dimensions) {
+  const used = new Set();
+  return items.map((item) => {
+    const index = item.targetIndex;
+    if (!Number.isInteger(index) || index < 0 || !dimensions[index] || used.has(index)) {
+      throw new Error(`${item.id}: targetIndexとall.mindの対応を確認してください。管理用ページで認識データを作り直して置き換えてください`);
+    }
+    used.add(index);
+    return createDrawingPlacement(item, dimensions[index]);
+  });
 }
 
 /**

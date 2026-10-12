@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const root = path.resolve(__dirname, '..');
-const context = vm.createContext({console, TextDecoder, TextEncoder, URL, ArrayBuffer, Uint8Array, Float32Array});
+const context = vm.createContext({console, window:{}, navigator:{userAgent:"Node test"}, TextDecoder, TextEncoder, URL, Blob, performance, setTimeout, clearTimeout, ArrayBuffer, Uint8Array, Float32Array});
 const cache = new Map();
 function moduleFor(file) {
   if (cache.has(file)) return cache.get(file);
@@ -19,7 +19,7 @@ function link(spec, parent) {
 function near(actual, expected, label) {
   for (let i=0;i<expected.length;i++) assert(Math.abs(actual[i]-expected[i]) < 1e-6, `${label}: ${actual} != ${expected}`);
 }
-const item = (axis='gltf-y-up', width=1, pixels=[1847,1238]) => ({id:'test',model:{coordinateSystem:axis},target:{widthPx:pixels[0],heightPx:pixels[1],realWidthM:width,realHeightM:width*pixels[1]/pixels[0]}});
+const item = (axis='gltf-y-up', width=1, pixels=[1847,1238]) => ({id:'test',model:{coordinateSystem:axis},targetIndex:0,target:{realWidthM:width,realHeightM:width*pixels[1]/pixels[0]}});
 
 // Blender頂点・ノードを標準GLBのY-up座標で記録した小さな実ファイルをメモリ内で構成する。
 function makeGLB() {
@@ -48,10 +48,10 @@ function makeGLB() {
 (async()=>{
   const m = moduleFor('js/placement.js'); await m.link(link); await m.evaluate();
   const T = cache.get('lib/three.module.min.js').namespace;
-  const {createDrawingPlacement, prepareModelFrame, blenderBounds} = m.namespace;
+  const {createDrawingPlacement, createDrawingPlacements, prepareModelFrame, blenderBounds} = m.namespace;
   const toFile = (p, axis) => axis==='gltf-y-up' ? [p[0],p[2],-p[1]] : p;
   for (const pixels of [[1847,1238],[800,1200]]) for (const width of [1,20]) for (const axis of ['gltf-y-up','blender-z-up']) {
-    const info=createDrawingPlacement(item(axis,width,pixels));
+    const info=createDrawingPlacement(item(axis,width,pixels),pixels);
     info.group.updateMatrixWorld(true);
     const h=width*pixels[1]/pixels[0], aspect=pixels[1]/pixels[0];
     for (const [point, expected] of [
@@ -68,7 +68,7 @@ function makeGLB() {
   const gltf=await new loader.namespace.GLTFLoader().parseAsync(makeGLB(),'');
   const config=item(); config.model.rotationDeg=[17,31,59]; // 旧補正値をARで二重適用しない
   const model=prepareModelFrame(gltf.scene,config,{preservePlacement:true});
-  const placement=createDrawingPlacement(config);
+  const placement=createDrawingPlacement(config,[1847,1238]);
   placement.group.add(model.unit); placement.group.updateMatrixWorld(true);
   let mesh; gltf.scene.traverse(o=>{if(o.isMesh)mesh=o;});
   const vertex=new T.Vector3().fromBufferAttribute(mesh.geometry.attributes.position,0);
@@ -95,29 +95,88 @@ function makeGLB() {
   near([vb.min.y,Math.max(vs.x,vs.y,vs.z)],[0,1],'通常ビューの自動フィットは維持');
   // 利用者の例：全体40m×30m、点(10,15,2)は左から25%、下から50%、高さ2m相当。
   const metric=item('blender-z-up',40,[4000,3000]);
-  const mapped=createDrawingPlacement(metric); mapped.group.updateMatrixWorld(true);
+  const mapped=createDrawingPlacement(metric,[4000,3000]); mapped.group.updateMatrixWorld(true);
   near(new T.Vector3(10,15,2).applyMatrix4(mapped.group.matrixWorld).toArray(),[-.25,0,.05],'実寸から画像内位置への対応');
   assert.equal(mapped.width,40); assert.equal(mapped.height,30);
   // 古い幅を残しても、新しい縦横の値を使う。
   metric.target.blenderWidth=999;
-  near(createDrawingPlacement(metric).group.scale.toArray(),[.025,.025,.025],'実寸値を使用');
+  near(createDrawingPlacement(metric,[4000,3000]).group.scale.toArray(),[.025,.025,.025],'実寸値を使用');
   // 数値の丸めは許容するが形状は変えない。高さの違いが1%を超える場合は明確に失敗する。
   metric.target.realHeightM=30.15;
-  const rounded=createDrawingPlacement(metric);
+  const rounded=createDrawingPlacement(metric,[4000,3000]);
   near(rounded.group.scale.toArray(),[.025,.025,.025],'縦横別に拡縮しない');
   assert(rounded.aspectError > .004 && rounded.aspectError < .006);
   metric.target.realHeightM=30.6;
-  assert.throws(()=>createDrawingPlacement(metric),/縦横比/);
+  assert.throws(()=>createDrawingPlacement(metric,[4000,3000]),/縦横比/);
   metric.target.realHeightM=29.4;
-  assert.throws(()=>createDrawingPlacement(metric),/縦横比/);
-  for(const field of ['widthPx','heightPx','realWidthM','realHeightM']) for(const bad of [0,-1,NaN,Infinity,'1',null,undefined]) {
+  assert.throws(()=>createDrawingPlacement(metric,[4000,3000]),/縦横比/);
+  for(const field of ['realWidthM','realHeightM']) for(const bad of [0,-1,NaN,Infinity,'1',null,undefined]) {
     const cfg=item(); cfg.target[field]=bad;
-    assert.throws(()=>createDrawingPlacement(cfg),new RegExp(field));
+    assert.throws(()=>createDrawingPlacement(cfg,[1847,1238]),new RegExp(field));
   }
   const legacy=item(); delete legacy.target.realWidthM; delete legacy.target.realHeightM; legacy.target.blenderWidth=1;
-  assert.throws(()=>createDrawingPlacement(legacy),/realWidthM/,'旧設定だけでは仮寸法を使わない');
-  assert.throws(()=>createDrawingPlacement(item('unknown')));
+  assert.throws(()=>createDrawingPlacement(legacy,[1847,1238]),/realWidthM/,'旧設定だけでは仮寸法を使わない');
+  assert.throws(()=>createDrawingPlacement(item('unknown'),[1847,1238]));
   const catalog=JSON.parse(fs.readFileSync(path.join(root,'data/items.json'),'utf8'));
-  for(const entry of catalog.items)createDrawingPlacement(entry);
+  // 同梱Compilerで実際のall.mindを読み、台帳に画素数がないまま配置できることを確認。
+  const targetsModule=moduleFor('js/drawing-targets.js'); await targetsModule.link(link); await targetsModule.evaluate();
+  const {loadDrawingTargets}=targetsModule.namespace;
+  const actualBytes=fs.readFileSync(path.join(root,'targets/all.mind'));
+  let requested;
+  context.fetch=async (src,options)=>{requested={src,options};return new Response(actualBytes);};
+  const actual=await loadDrawingTargets('targets/all.mind');
+  assert.equal(requested.options.cache,'no-cache');
+  assert.deepEqual(Array.from(actual.dimensions[0]),[1847,1238]);
+  assert(Buffer.from(actual.buffer).equals(actualBytes),'追跡へ渡す認識データを改変しない');
+  createDrawingPlacements(catalog.items,actual.dimensions);
+  // MindARはこのURLをfetchする。探し直しでも同じデータを複数回読める。
+  const blobUrl=URL.createObjectURL(new Blob([actual.buffer]));
+  try { for(let i=0;i<2;i++) assert(Buffer.from(await (await fetch(blobUrl)).arrayBuffer()).equals(actualBytes)); }
+  finally { URL.revokeObjectURL(blobUrl); }
+
+  // 画像差し替え：旧1847×1238の入力を残しても、新しい縦長1920×2150だけを使う。
+  const portrait=item('blender-z-up',19.2,[1920,2150]);
+  portrait.target.realHeightM=21.5;
+  portrait.target.widthPx=1847; portrait.target.heightPx=1238;
+  const Compiler=cache.get('lib/mindar/mindar-image.prod.js').namespace.Compiler;
+  const compiler=new Compiler();
+  compiler.data=[{targetImage:{width:1920,height:2150},matchingData:[],trackingData:[]}];
+  const portraitBytes=compiler.exportData();
+  context.fetch=async()=>new Response(portraitBytes);
+  const replacement=await loadDrawingTargets('targets/all.mind');
+  const [fresh]=createDrawingPlacements([portrait],replacement.dimensions);
+  fresh.group.updateMatrixWorld(true);
+  assert.equal(fresh.widthPx,1920); assert.equal(fresh.heightPx,2150);
+  near(new T.Vector3(19.2,21.5,0).applyMatrix4(fresh.group.matrixWorld).toArray(),[.5,2150/1920/2,0],'差し替え後の右上');
+  portrait.target.widthPx=null; portrait.target.heightPx='obsolete';
+  createDrawingPlacements([portrait],replacement.dimensions);
+  delete portrait.target.widthPx; delete portrait.target.heightPx;
+  createDrawingPlacements([portrait],replacement.dimensions);
+
+  // 配列の順でなくtargetIndexで対応を取る（縦長と横長の複数図面）。
+  const landscape=item('blender-z-up',40,[4000,3000]); landscape.targetIndex=1;
+  const multi=createDrawingPlacements([landscape,portrait],[[1920,2150],[4000,3000]]);
+  assert.equal(multi[0].widthPx,4000); assert.equal(multi[1].heightPx,2150);
+  assert.throws(()=>createDrawingPlacements([portrait,portrait],replacement.dimensions),/targetIndex/);
+  for(const index of [-1,1.5,2,'0',undefined]) {
+    assert.throws(()=>createDrawingPlacements([{...portrait,targetIndex:index}],replacement.dimensions),/targetIndex/);
+  }
+  assert.throws(()=>createDrawingPlacement(portrait),/all.mind/,'画素数の旧入力へ戻らない');
+
+  context.fetch=async()=>new Response('missing',{status:404});
+  await assert.rejects(loadDrawingTargets('targets/all.mind'),/HTTP 404/);
+  context.fetch=async()=>{throw new Error('offline');};
+  await assert.rejects(loadDrawingTargets('targets/all.mind'),/通信状態/);
+  context.fetch=async()=>new Response('<html>not mind</html>');
+  await assert.rejects(loadDrawingTargets('targets/all.mind'),/無効/);
+  for(const targetImage of [{width:0,height:1},{width:1,height:-1},{width:'1920',height:2150},{width:1.5,height:2},{}]) {
+    compiler.data=[{targetImage,matchingData:[],trackingData:[]}];
+    context.fetch=async()=>new Response(compiler.exportData());
+    await assert.rejects(loadDrawingTargets('targets/all.mind'),/無効/);
+  }
+  compiler.data=[];
+  context.fetch=async()=>new Response(compiler.exportData());
+  await assert.rejects(loadDrawingTargets('targets/all.mind'),/無効/);
+  console.log('PASS: 実際のall.mind読込、解像度未入力・旧値の無視、縦長画像への差し替え、複数図面の対応、HTTP/破損エラー、同一データ再利用');
   console.log('PASS: 実寸の縦横、必須入力、縦横比検証、形状保持、図面四隅、正負XYZ、GLB読込、親子変換、外寸非依存、注釈座標、通常ビュー');
 })().catch(err=>{console.error(err);process.exitCode=1;});

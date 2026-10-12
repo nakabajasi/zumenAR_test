@@ -14,13 +14,20 @@ const items = catalog.items.slice().sort((a, b) => a.targetIndex - b.targetIndex
 
 /* ---------- 1. 認識用データ ---------- */
 
-function loadImage(src) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error(`${src} を読み込めません`));
-    img.src = new URL(src, ROOT).href;
-  });
+async function loadImage(src) {
+  const response = await fetch(new URL(src, ROOT), { cache: 'no-cache' });
+  if (!response.ok) throw new Error(`${src} を読み込めません（HTTP ${response.status}）`);
+  const imageUrl = URL.createObjectURL(await response.blob());
+  try {
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`${src} を画像として読み込めません`));
+      img.src = imageUrl;
+    });
+  } finally {
+    URL.revokeObjectURL(imageUrl);
+  }
 }
 
 function checkIndexes() {
@@ -62,10 +69,8 @@ async function compile() {
       const track = d.trackingData[Math.min(1, d.trackingData.length - 1)].points.length;
       const verdict = track >= GOOD ? '十分' : track >= POOR ? 'やや少ない' : '少ない（枠・写真・文字を含めて作り直す）';
       const size = `${images[i].naturalWidth}×${images[i].naturalHeight}`;
-      const mismatch = (items[i].target.widthPx !== images[i].naturalWidth || items[i].target.heightPx !== images[i].naturalHeight)
-        ? '（台帳の widthPx / heightPx と不一致）' : '';
       const tr = document.createElement('tr');
-      [[String(items[i].targetIndex), 'num'], [items[i].id], [size + mismatch], [String(detect), 'num'], [dense ? `${track}（標準 ${standardCounts[i]}）` : String(track), 'num'], [verdict]].forEach(([text, cls]) => {
+      [[String(items[i].targetIndex), 'num'], [items[i].id], [size], [String(detect), 'num'], [dense ? `${track}（標準 ${standardCounts[i]}）` : String(track), 'num'], [verdict]].forEach(([text, cls]) => {
         const td = document.createElement('td');
         if (cls) td.className = cls;
         td.textContent = text;

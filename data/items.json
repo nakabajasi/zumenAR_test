@@ -16,7 +16,7 @@
       },
       "model": { "src": "data/item01/model.glb", "coordinateSystem": "blender-z-up" },
       "meta": "data/item01/meta.json",
-      "annotations": "data/item01/annotations.json"
+      "annotations": "null"
     }
   ]
 }

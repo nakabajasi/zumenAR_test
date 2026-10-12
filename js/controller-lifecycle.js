@@ -12,6 +12,8 @@ export function disposeController(controller, tf = window.MINDAR?.IMAGE?.tf) {
   controller.worker?.terminate();
   matchDone?.({ targetIndex: -1, modelViewTransform: null });
   trackDone?.({ modelViewTransform: null });
+  controller.partialTracker?.dispose();
+  controller.partialTracker = null;
 
   // このControllerに属する永続テンソルだけを解放する。共有の計算基盤は終了しない。
   if (tf) {

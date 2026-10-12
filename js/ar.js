@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 // 読み込む順番に意味がある：tracking.js が先。MindAR の2つのファイルはどちらも window.MINDAR.IMAGE に
 // 部品を登録するが、tracking.js が使う側は丸ごと置き換え、下の three 用は追記する。逆順だと追記分が消える
-import { TRACKING_DEFAULTS, trackingStats, installTracking } from './tracking.js?rev=tracking-fix-20261009';
+import { TRACKING_DEFAULTS, trackingStats, installTracking } from './tracking.js?rev=partial-tracking-1';
 import { MindARThree } from '../lib/mindar/mindar-image-three.prod.js';
 import {
   url, loadCatalog, itemFromQuery, fetchJson, isInAppBrowser, loadItemObject, addLights,
@@ -12,15 +12,15 @@ import { createDrawingPlacements, blenderBounds } from './placement.js?rev=drawi
 import { loadDrawingTargets } from './drawing-targets.js?rev=drawing-auto-dimensions-1';
 import { createPanel } from './panel.js?rev=drawing-auto-dimensions-1';
 import { PoseStabilizer } from './stabilizer.js?rev=tracking-fix-20261009';
-import { disposeController } from './controller-lifecycle.js?rev=tracking-fix-20261009';
+import { disposeController } from './controller-lifecycle.js?rev=partial-tracking-1';
 
 const $ = (id) => document.getElementById(id);
 const stage = $('stage');
 const hint = $('hint');
 const showHint = (text) => { hint.textContent = text || ''; hint.hidden = !text; };
 // 図面は近いほど見つけやすい（擬似映像での成功率：画面いっぱい約9割、画面幅の半分では約3割）
-const SCAN_HINT = '図面が画面いっぱいになるように近づけてください';
-const HOLD_HINT = '図面を見失いました。図面を画面いっぱいに映すと再開します';
+const SCAN_HINT = 'まず図面全体を映し、認識後はゆっくり近づけてください';
+const HOLD_HINT = '図面を見失いました。少し離れて図面全体を映し直してください';
 const KEEP_LOADED = 2;   // 同時に持つモデルの数。iPhoneのメモリ不足を避ける
 
 let mindar = null;
@@ -213,6 +213,7 @@ function updateDebug(now) {
   debugBox.hidden = false;
   debugBox.textContent = [
     '追跡修正 2026-10-09',
+    '部分追跡 2026-10-12',
     '実寸設定 2026-10-11：画像左下＝Blender原点',
     `画像寸法 自動取得（all.mind） ${current ? `${current.placement.widthPx} × ${current.placement.heightPx} px` : '-'}`,
     `図面全体 幅×高さ ${dimensions}`,
@@ -221,6 +222,8 @@ function updateDebug(now) {
     `状態 ${t.state}${current && current.stabilizer.held ? '（固定表示）' : ''}`,
     `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,
     `手がかり ${t.points}点 → 採用 ${t.used}点 / 必要 ${tracking.minPoints}点`,
+    `追跡方式 ${t.trackingMode} / 局所復帰 ${t.localRecoveries}回`,
+    `近接候補 ${t.localCandidates}点 / 視野内 ${t.localVisible}点 / 登録 ${t.localRegistered}点`,
     `最終姿勢から ${t.lastPoseAt == null ? '-' : Math.round(now - t.lastPoseAt)}ms`,
     `発見 ${t.detections}  却下 ${t.rejected}`,
     `探索 ${Object.keys(t.tries).map((k) => `${k} ${t.hits[k] || 0}/${t.tries[k]}`).join('  ')}`,

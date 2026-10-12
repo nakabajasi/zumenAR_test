@@ -1,6 +1,7 @@
 // 管理用：認識用データ（all.mind）の作成と、QRコードの生成
 import { Compiler } from '../lib/mindar/mindar-image.prod.js';
 import { extractDense } from './trackpoints.js';
+import { buildCloseFrame, CLOSE_FRAME_TAG } from './closepoints.js?rev=partial-tracking-1';
 
 const $ = (id) => document.getElementById(id);
 const ROOT = new URL('..', import.meta.url);
@@ -57,6 +58,13 @@ async function compile() {
         if (points.length > frame.points.length) frame.points = points;
       }
     }
+    for (let i = 0; i < data.length; i++) {
+      status.textContent = `近接追跡用の特徴点を作成中… ${i + 1}/${data.length}`;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const d = data[i];
+      d.trackingData = d.trackingData.filter(frame => frame.purpose !== CLOSE_FRAME_TAG);
+      d.trackingData.push(buildCloseFrame(d.targetImage));
+    }
     const buffer = await compiler.exportData();
 
     const tbody = $('compile-table').querySelector('tbody');
@@ -67,10 +75,11 @@ async function compile() {
       const detect = finest.maximaPoints.length + finest.minimaPoints.length;
       // 追跡用：見つけたあと追い続けるときの手がかり（MindARが実際に使う段階の数）
       const track = d.trackingData[Math.min(1, d.trackingData.length - 1)].points.length;
+      const close = d.trackingData.find(frame => frame.purpose === CLOSE_FRAME_TAG).points.length;
       const verdict = track >= GOOD ? '十分' : track >= POOR ? 'やや少ない' : '少ない（枠・写真・文字を含めて作り直す）';
       const size = `${images[i].naturalWidth}×${images[i].naturalHeight}`;
       const tr = document.createElement('tr');
-      [[String(items[i].targetIndex), 'num'], [items[i].id], [size], [String(detect), 'num'], [dense ? `${track}（標準 ${standardCounts[i]}）` : String(track), 'num'], [verdict]].forEach(([text, cls]) => {
+      [[String(items[i].targetIndex), 'num'], [items[i].id], [size], [String(detect), 'num'], [dense ? `${track}（標準 ${standardCounts[i]}）` : String(track), 'num'], [String(close), 'num'], [verdict]].forEach(([text, cls]) => {
         const td = document.createElement('td');
         if (cls) td.className = cls;
         td.textContent = text;

@@ -13,9 +13,11 @@
 //   変更  映像を「図面と正対したらこう見える」形に直してから探す方法を交互に挟む（oblique.js）。
 import { Controller } from '../lib/mindar/mindar-image.prod.js';
 import { tiltTowardTop, tiltTowardSide, facing, planeTilt, planWindow, renderWindow, poseFromWindow } from './oblique.js';
+import { PartialTracker, hasPointSpread } from './partial-tracking.js?rev=partial-tracking-1';
 
 export const TRACKING_DEFAULTS = {
   minPoints: 6,        // 姿勢の更新に使う手がかりの最少数（MindAR既定は4。少ないと姿勢が暴れる）
+  partialTracking: 1, // 近接時は、画面内に残った細かい特徴点を使って追跡する
   retryAfterMs: 300,   // 最後に追跡できてから、この時間を超えて失敗が続いたら探し直す
   warmupTolerance: 2,  // 表示を始めるまでに必要な連続成功コマ数
   lostAfterMs: 800,    // 姿勢が得られない状態がこの時間（ミリ秒）続いたら「見失った」と判断する
@@ -39,6 +41,7 @@ export const trackingStats = {
   tries: {}, hits: {},   // 探し方ごとの試行回数と成功回数（正面＝MindAR既定、傾50＝傾き50°を仮定、前回＝最後に追跡できた向き）
   lastWay: '', lastPose: null, lastPoseAt: null,
   errors: 0, errorStreak: 0, lastError: '', lastFrameAt: 0, _t0: 0, _n: 0,
+  trackingMode: '全体', localCandidates: 0, localVisible: 0, localRegistered: 0, localRecoveries: 0,
 };
 
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
@@ -79,12 +82,16 @@ export function installTracking(cfg) {
     const minPoints = Math.max(4, Math.ceil(Number(cfg.minPoints) || 6));
     const retryAfterMs = Math.max(0, Number(cfg.retryAfterMs) || 0);
     const warmupFrames = Math.max(1, Math.ceil(Number(this.warmupTolerance) || 1));
+    this.partialTracker?.dispose();
+    this.partialTracker = cfg.partialTracking ? new PartialTracker(this, window.MINDAR?.IMAGE?.tf, minPoints) : null;
     const states = this.markerDimensions.map(() => ({
       showing: false, isTracking: false, locked: false, currentModelViewTransform: null, trackCount: 0, lastGoodAt: 0, failStreak: 0,
+      lastRecoveryAt: -Infinity, pendingTrack: null, recovering: false,
     }));
     this.trackingStates = states;
     stats._t0 = performance.now(); stats._n = 0; stats.errorStreak = 0; stats.lastFrameAt = performance.now();
     stats.points = 0; stats.used = 0; stats.lastPoseAt = null;
+    stats.trackingMode = '全体'; stats.localCandidates = 0; stats.localVisible = 0; stats.localRegistered = 0;
     let detectTurn = 0;
     let lastNormal = null;   // 最後に追跡できていたときの図面の向き（斜めのときだけ覚える）
     let scratch = null;
@@ -159,6 +166,19 @@ export function installTracking(cfg) {
         }
       });
       stats.points = 0; stats.used = 0;
+      // 見失った直後は、最後の姿勢の近くで局所的な照合を試す。
+      // 古い姿勢を表示し続けるだけでは復帰扱いにしない。必ず現在の映像から照合する。
+      const recent = states.findIndex((s,i) => !s.isTracking && s.locked && this.partialTracker?.frames[i]
+        && now - s.lastGoodAt < 1200 && now - s.lastRecoveryAt >= 200
+        && (this.interestedTargetIndex === -1 || this.interestedTargetIndex === i));
+      if (recent !== -1 && states.filter(s => s.isTracking).length < this.maxTrack) {
+        const s = states[recent];
+        s.lastRecoveryAt = now;
+        const local = this.partialTracker.trackFine(inputT, s.currentModelViewTransform, recent);
+        if (local && local.worldCoords.length >= minPoints) {
+          s.pendingTrack = local; s.recovering = true; s.isTracking = true;
+        }
+      }
       // 図面を探す（追跡中の図面が上限に達していないときだけ）
       if (states.filter((s) => s.isTracking).length < this.maxTrack) {
         const candidates = [];
@@ -191,11 +211,18 @@ export function installTracking(cfg) {
         let good = false;
 
         if (s.isTracking) {
-          const { worldCoords, screenCoords } = this.tracker.track(inputT, s.currentModelViewTransform, i);
+          const result = s.pendingTrack || (this.partialTracker
+            ? this.partialTracker.track(inputT, s.currentModelViewTransform, i)
+            : this.tracker.track(inputT, s.currentModelViewTransform, i));
+          s.pendingTrack = null;
+          const { worldCoords, screenCoords } = result;
+          stats.trackingMode = result.mode || '全体';
+          stats.localCandidates = result.candidates || 0; stats.localVisible = result.visible || 0; stats.localRegistered = result.registered || 0;
           stats.points = worldCoords.length;
           let next = null;
           let used = { worldCoords, screenCoords };
           if (cfg.rejectOutliers) used = consistentPoints(this.projectionTransform, s.currentModelViewTransform, worldCoords, screenCoords);
+          if (result.mode === '部分' && !hasPointSpread(used.screenCoords, this.inputWidth, this.inputHeight)) used = {worldCoords:[],screenCoords:[]};
           stats.used = used.worldCoords.length;
           if (s.showing) stats.minPointsSeen = Math.min(stats.minPointsSeen, stats.used);
           // 開始・継続とも同じ条件。4〜5点だけで表示を始め、その直後に更新不能になるのを防ぐ。
@@ -204,6 +231,8 @@ export function installTracking(cfg) {
             if (!active()) return;
           }
           if (next) {
+            if (s.recovering) stats.localRecoveries += 1;
+            s.recovering = false;
             s.currentModelViewTransform = next; s.failStreak = 0; s.locked = true; good = true;
             s.lastGoodAt = performance.now();
             const tilt = planeTilt(next);
@@ -212,6 +241,7 @@ export function installTracking(cfg) {
             // 探して得たばかりの姿勢で一度も追跡できなかった：その姿勢が粗いので、粘らずすぐ探し直す
             s.isTracking = false; stats.rejected += 1;
           } else {
+            s.recovering = false;
             s.failStreak += 1;
             if (performance.now() - s.lastGoodAt >= retryAfterMs) {
               s.isTracking = false; s.trackCount = 0; stats.fallbacks += 1;
@@ -247,7 +277,7 @@ export function installTracking(cfg) {
           // 1コマの失敗で処理全体が止まらないようにする（止まると再読み込みするまで復帰しない）
           if (active()) {
             stats.errors += 1; stats.errorStreak += 1; stats.lastError = String((err && err.message) || err);
-            states.forEach((s) => { s.isTracking = false; s.locked = false; s.failStreak = 0; s.trackCount = 0; });
+            states.forEach((s) => { s.isTracking = false; s.locked = false; s.failStreak = 0; s.trackCount = 0; s.pendingTrack = null; s.recovering = false; });
           }
         } finally {
           try { if (inputT) inputT.dispose(); } catch (err) { /* 描画面が失われたときは破棄も失敗する */ }

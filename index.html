@@ -3,30 +3,42 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>図面AR</title>
+<title>AR — Archaeology Reference</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <main class="page">
   <header class="page-head">
-    <h1 id="site-title">図面AR</h1>
+    <h1 id="site-title">AR — Archaeology Reference</h1>
     <p id="site-lead"></p>
   </header>
 
   <div class="callout" id="inapp" hidden>このアプリ内の画面ではカメラが動かないことがあります。メニューから「Safariで開く」または「ブラウザで開く」を選んでください。</div>
+  <div class="callout" id="notice" hidden></div>
+
+  <h2>できること</h2>
+  <dl class="features">
+    <dt>紙図面と3Dモデルを同時に見る</dt>
+    <dd>図面にかざすと、図面の元になった遺構の3Dモデルが、図面と同じ位置・縮尺・方位で重なります。「透かす」で下の図面の線と見比べられます。</dd>
+    <dt>同じ資料を共同で参照する</dt>
+    <dd>資料や注記ごとのリンクを渡すと、図面を持っていない人も同じものを3Dで見られます。注記は一覧にして保存・印刷できます。</dd>
+    <dt>専用ソフトなしで見る</dt>
+    <dd>インストールは不要です。各自のスマートフォンのブラウザで動きます（iPhone は iOS 16.4 以降の Safari）。</dd>
+  </dl>
 
   <h2>使い方</h2>
   <ol class="steps">
     <li>「図面にかざす」を押し、カメラの使用を許可する。</li>
     <li>図面が画面いっぱいになるようにかざす。見失ったら、もう一度図面を画面いっぱいに映す。</li>
-    <li>モデルが出たら、図面を映したままスマホの位置を変えて観察する。画面下の帯を押すと情報が開く。</li>
+    <li>モデルをたたくと資料情報と注記が出る。横になぞって回す／2本指で拡大する。</li>
   </ol>
-  <p><a class="btn btn-primary" href="ar.html">図面にかざす</a></p>
+  <p><a class="btn btn-primary" href="ar.html">図面にかざす</a> <a class="btn" href="notes.html">注記一覧</a></p>
 
-  <h2>資料</h2>
-  <ul class="items" id="items"><li class="muted">読み込み中…</li></ul>
+  <h2>図面と資料</h2>
+  <div id="items"><p class="muted">読み込み中…</p></div>
 
   <footer class="foot">
+    <span id="edition"></span>
     three.js・MindAR・Draco を同梱しています（各ライセンスは <span class="mono">lib/</span> を参照）。
     <a href="tools/">管理用ページ</a>
   </footer>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>3D表示｜図面AR</title>
+<title>3D表示｜AR</title>
 <link rel="stylesheet" href="css/style.css">
 <script type="importmap">
 { "imports": { "three": "./lib/three.module.min.js", "three/addons/": "./lib/three-addons/" } }
@@ -14,12 +14,14 @@
 <div class="topbar">
   <a class="pill" href="index.html">← 一覧</a>
   <div class="group">
+    <button class="pill" id="btn-sheet" type="button" aria-pressed="true" hidden>図面</button>
+    <button class="pill" id="btn-see" type="button" aria-pressed="false">透かす</button>
     <button class="pill" id="btn-mode" type="button" aria-pressed="false">形だけ</button>
-    <button class="pill" id="btn-reset" type="button">向きを戻す</button>
+    <button class="pill" id="btn-reset" type="button">元に戻す</button>
   </div>
 </div>
 <p class="hint" id="hint">読み込み中…</p>
 <div id="panel" hidden></div>
-<script type="module" src="js/viewer.js?rev=drawing-auto-dimensions-1"></script>
+<script type="module" src="js/viewer.js"></script>
 </body>
 </html>

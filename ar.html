@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<title>AR表示｜図面AR</title>
-<link rel="stylesheet" href="css/style.css?rev=drawing-auto-dimensions-1">
+<title>AR表示｜AR</title>
+<link rel="stylesheet" href="css/style.css">
 <script type="importmap">
 { "imports": { "three": "./lib/three.module.min.js", "three/addons/": "./lib/three-addons/" } }
 </script>
@@ -15,7 +15,9 @@
 <div class="topbar" id="topbar" hidden>
   <a class="pill" href="index.html">← 一覧</a>
   <div class="group">
+    <button class="pill" id="btn-see" type="button" aria-pressed="false">透かす</button>
     <button class="pill" id="btn-mode" type="button" aria-pressed="false">形だけ</button>
+    <button class="pill" id="btn-reset" type="button">元に戻す</button>
   </div>
 </div>
 <p class="hint" id="hint" hidden></p>
@@ -29,11 +31,10 @@
     <div class="callout" id="inapp" hidden>このアプリ内の画面ではカメラが動かないことがあります。メニューから「Safariで開く」または「ブラウザで開く」を選んでください。</div>
     <button class="btn btn-primary" id="btn-start" type="button">カメラを起動</button>
     <a class="btn" id="link-viewer" href="viewer.html">カメラなしで3Dを見る</a>
-    <label class="diagnostic-option"><input id="check-debug" type="checkbox"> 確認用の数値を表示</label>
     <p class="error" id="gate-error" hidden></p>
   </div>
 </div>
 
-<script type="module" src="js/ar.js?rev=partial-tracking-1"></script>
+<script type="module" src="js/ar.js"></script>
 </body>
 </html>

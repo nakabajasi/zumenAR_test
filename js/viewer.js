@@ -1,5 +1,5 @@
 // 通常の3D表示。カメラが使えない端末、図面を持っていない人（共有リンクで開いた人）、認識できなかったときの逃げ先。
-// 平面図に重ねる資料（display.mode = plan）で、図面に viewerImage があれば、AR と同じ位置・縮尺・方位で図面の上に置く
+// 平面図に重ねる資料（display.mode = plan）では、図面画像（image.jpg）を敷き、AR と同じ位置・縮尺・方位で図面の上に置く
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
@@ -8,6 +8,7 @@ import {
 } from './common.js';
 import { createPanel } from './panel.js';
 import { loadAnnotationData } from './annotations.js';
+import { fetchOptional } from './catalog.js';
 import { shareUrl } from './catalog.js';
 
 const $ = (id) => document.getElementById(id);
@@ -52,7 +53,7 @@ async function main() {
   const withSheet = displayMode(item) === 'plan' && !!drawing.viewerImage;
   const [model, meta, annoData, sheetTexture] = await Promise.all([
     loadItemObject(item, (p) => showHint(`読み込み中… ${Math.round(p * 100)}%`)),
-    item.meta ? fetchJson(item.meta).catch(() => null) : null,
+    item.meta ? fetchOptional(item.meta).catch(() => null) : null,
     loadAnnotationData(item).catch((err) => { console.warn(err); return null; }),
     withSheet ? loadTexture(drawing.viewerImage).catch(() => null) : null,
   ]);

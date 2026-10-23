@@ -19,7 +19,7 @@ const drawing = item.drawing;
 for (const it of catalog.items) {
   const o = document.createElement('option');
   o.value = it.id;
-  o.textContent = `${it.drawing.id}／${it.title || it.id}`;
+  o.textContent = `${it.drawing.title || it.drawing.id}／${it.title || it.id}`;
   o.selected = it === item;
   $('item-select').append(o);
 }
@@ -99,7 +99,8 @@ function setOpacity(object, alpha) {
 }
 
 status('モデルを読み込み中…');
-const model = await loadItemObject(item);
+let rotationDeg = (item.model.rotationDeg || [0, 0, 0]).slice();
+let model = await loadItemObject(item);
 let pose = null;
 
 // 同じ図面のほかの資料も薄く出す（並びの確認用）
@@ -154,7 +155,10 @@ function apply({ fromInputs = false } = {}) {
   $('ground-value-wrap').hidden = fields.groundKind.value !== 'value';
 
   // 結果
-  const out = { display: cleanDisplay(), drawing: { id: drawing.id, pxPerMeter: ppm ? round(ppm, 3) : null } };
+  const out = {
+    display: cleanDisplay(), model: { rotationDeg },
+    drawing: { id: drawing.id, pxPerMeter: ppm ? round(ppm, 3) : null, widthPx: drawing.widthPx, heightPx: drawing.heightPx },
+  };
   $('out').value = JSON.stringify(out, null, 2);
   const m = item.model.metersPerUnit == null ? 1 : item.model.metersPerUnit;
   const s = model.size;
@@ -162,6 +166,30 @@ function apply({ fromInputs = false } = {}) {
     + (mode === 'plan' && ppm ? `／図面上で約 ${Math.round(Math.max(s.x, s.z) * m * ppm)} 画素` : '');
   render();
 }
+
+// モデルの上の向き（台帳の model.rotationDeg）。変えたらモデルを読み直す
+const upSelect = $('up-axis');
+function showUp() {
+  const v = rotationDeg.join(',');
+  const known = [...upSelect.options].some((o) => o.value === v);
+  upSelect.querySelector('option[value="custom"]').hidden = known;
+  upSelect.value = known ? v : 'custom';
+  // 平面図に重ねるモデル（遺構）は、ふつう高さより広がりが大きい。高さのほうが大きければ向きが違う疑いがある
+  const s = model.unitSize;
+  const tall = displayMode(editing()) === 'plan' && s.y > 0.8 * Math.max(s.x, s.z);
+  $('up-note').textContent = tall
+    ? '⚠ モデルが立っているように見えます。上の向きを切り替えてみてください。'
+    : 'Blender の書き出しで「+Y上」を外したモデルは「+Z が上」です。注記の annotation.glb もモデルと同じ設定で書き出します。';
+}
+upSelect.addEventListener('change', async () => {
+  if (upSelect.value === 'custom') return;
+  rotationDeg = upSelect.value.split(',').map(Number);
+  status('モデルを読み直しています…');
+  model = await loadItemObject({ ...item, model: { ...item.model, rotationDeg } });
+  status(`${drawing.title || drawing.id}（${drawing.widthPx}×${drawing.heightPx} 画素）`);
+  apply();
+  showUp();
+});
 
 function cleanDisplay() {
   const out = { mode: d.mode, at: [round(d.at[0]), round(d.at[1])] };
@@ -289,11 +317,23 @@ $('btn-all').addEventListener('click', () => look(new THREE.Vector3(), aspect * 
 
 function updatedCatalog() {
   const out = JSON.parse(JSON.stringify(raw));
-  const rawItem = out.items.find((it) => it.id === item.id);
+  const rawItem = out.items[item.index]; // id を省略した台帳もあるので、並び順で対応させる
   rawItem.display = cleanDisplay();
+  rawItem.model = { ...(rawItem.model || {}), rotationDeg };
   if (Array.isArray(out.targets)) {
-    const t = out.targets.find((x) => x.id === drawing.id);
+    const t = out.targets[drawing.index];
     if (ppm) t.pxPerMeter = round(ppm, 3);
+    // 位置と縮尺は、いまの図面画像の画素で書く。その画像の大きさも一緒に残す（画像を書き出し直したときの換算用）
+    const resized = t.widthPx && t.widthPx !== drawing.widthPx;
+    t.widthPx = drawing.widthPx;
+    t.heightPx = drawing.heightPx;
+    if (resized) {
+      // 同じ図面のほかの資料の位置も、いまの画像の画素に直して書く
+      for (const other of drawing.items) {
+        const r = out.items[other.index];
+        if (other !== item && r && r.display && Array.isArray(other.display && other.display.at)) r.display.at = other.display.at.map((v) => round(v));
+      }
+    }
   } else if (rawItem.target && typeof rawItem.target === 'object' && ppm) {
     rawItem.target.pxPerMeter = round(ppm, 3); // 旧形式の台帳
   }
@@ -314,5 +354,6 @@ $('btn-copy').addEventListener('click', async () => {
 
 status(`${drawing.title || drawing.id}（${drawing.widthPx}×${drawing.heightPx} 画素）`);
 apply();
+showUp();
 $('btn-fit').click();
 window.__align = { d, get ppm() { return ppm; }, apply, updatedCatalog, cam, pose: () => pose }; // 確認用

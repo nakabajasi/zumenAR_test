@@ -14,8 +14,12 @@
     <p>図面を追加・差し替えたときに使います。処理はすべてこのブラウザの中で行います。</p>
   </header>
 
+  <h2>0. ファイルの確認</h2>
+  <p>決まった名前のファイルがそろっているか、組み合わせが合っているかを確かめます。ファイルを差し替えたら、まずここを見てください。</p>
+  <div id="files"><p class="muted">確かめています…</p></div>
+
   <h2>1. 認識用データを作る</h2>
-  <p>台帳（<span class="mono">data/items.json</span>）の <span class="mono">targets</span> に載っている図面画像をまとめて <span class="mono">all.mind</span> にします。できたファイルを <span class="mono">targets/all.mind</span> に置き換えてください。図面を足したり差し替えたりしたときだけ必要です。</p>
+  <p>台帳（<span class="mono">data/items.json</span>）の <span class="mono">targets</span> に載っている図面の画像（<span class="mono">data/image.jpg</span>）をまとめて <span class="mono">all.mind</span> にします。できたファイルで <span class="mono">data/all.mind</span> を置き換えてください。図面の画像を足したり差し替えたりしたときだけ必要です（MindAR の公式ページで作った all.mind でも動きます）。</p>
   <p><button class="btn btn-primary" id="btn-compile" type="button">作成する</button> <a class="btn" id="link-download" hidden>all.mind を保存</a></p>
   <p class="muted" id="compile-status"></p>
   <table class="plain" id="compile-table" hidden>

@@ -60,6 +60,16 @@ code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; 
 table.plain { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 table.plain th, table.plain td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; }
 table.plain th { font-size: 0.78rem; letter-spacing: 0.08em; color: var(--ink-2); font-weight: 600; }
+/* ファイルの確認 */
+.files-table th { white-space: nowrap; }
+.files-table td:first-child { white-space: nowrap; font-size: 0.82rem; }
+.files-table .file-state { white-space: nowrap; font-weight: 600; }
+.files-table .file-ok .file-state { color: #1d6b35; }
+.files-table .file-warn .file-state { color: #8a5a00; }
+.files-table .file-ng .file-state { color: #b00020; }
+.files-table .file-ng { background: #fdf0f0; }
+.files-table .file-none .file-state { color: var(--ink-2); font-weight: 400; }
+@media (max-width: 640px) { .files-table td:first-child { white-space: normal; word-break: break-all; } }
 td.num { font-variant-numeric: tabular-nums; text-align: right; }
 .qr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
 .qr { border: 1px solid var(--rule); background: #fff; padding: 12px; text-align: center; border-radius: 6px; }
@@ -98,6 +108,13 @@ body.viewer-page { background: radial-gradient(120% 90% at 50% 35%, #f3f0e8 0%, 
   width: fit-content; max-width: calc(100% - 32px); margin: 0 auto; padding: 8px 14px; border-radius: 4px;
   background: var(--panel); color: var(--panel-ink); font-size: 0.88rem; text-align: center;
   pointer-events: none;
+}
+
+/* 設定の食い違い（all.mind と図面画像など）。消えない */
+.config-warn {
+  position: fixed; z-index: 15; left: 16px; right: 16px; top: calc(180px + env(safe-area-inset-top));
+  max-width: 34rem; margin: 0 auto; padding: 8px 14px; border-radius: 4px;
+  background: #8a1c1c; color: #fff; font-size: 0.85rem; line-height: 1.5;
 }
 
 .recover {

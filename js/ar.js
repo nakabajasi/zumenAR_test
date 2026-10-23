@@ -10,6 +10,7 @@ import {
 } from './common.js';
 import { createPanel } from './panel.js';
 import { loadAnnotationData } from './annotations.js';
+import { fetchOptional, MIND_FILE } from './catalog.js';
 import { PoseStabilizer } from './stabilizer.js';
 
 const $ = (id) => document.getElementById(id);
@@ -72,7 +73,7 @@ function ensureLoaded(slot) {
   const { item } = slot;
   slot.loading = Promise.all([
     loadItemObject(item, (p) => { if (!active || active === slot.stage) showHint(`モデルを読み込み中… ${Math.round(p * 100)}%`); }),
-    item.meta ? fetchJson(item.meta).catch(() => null) : null,
+    item.meta ? fetchOptional(item.meta).catch(() => null) : null,
     loadAnnotationData(item).catch((err) => { console.warn(err); return null; }),
   ]).then(([model, meta, annoData]) => {
     const pose = buildPose(item, model);
@@ -328,7 +329,7 @@ async function start(preferredTarget) {
 
   mindar = new MindARThree({
     container: stage,
-    imageTargetSrc: url('targets/all.mind'),
+    imageTargetSrc: url(MIND_FILE),
     maxTrack: 1,
     uiLoading: 'no', uiScanning: 'no', uiError: 'no',
     warmupTolerance: tracking.warmupTolerance,
@@ -350,6 +351,7 @@ async function start(preferredTarget) {
   running = true;
   mindar.renderer.setAnimationLoop(render);
   setupGestures();
+  checkMindFile();
 
   // QRで図面や資料を指定して開いた場合は、認識を待たずにその図面のモデルを先に読み込んでおく
   const first = preferredTarget ? stages[preferredTarget.index] : null;
@@ -362,6 +364,27 @@ async function start(preferredTarget) {
     trackingStats.lastFrameAt = performance.now(); // 画面を離れていた時間を「処理が止まった」と数えない
     if (mindar.video && mindar.video.paused) mindar.video.play().catch(() => {});
   });
+}
+
+// all.mind と図面画像（image.jpg）の食い違いを知らせる。片方だけ差し替えると、認識しないかモデルがずれる
+function checkMindFile() {
+  const dims = (mindar.controller && mindar.controller.markerDimensions) || [];
+  const problems = [];
+  if (dims.length !== catalog.targets.length) {
+    problems.push(`認識データ（all.mind）の図面は${dims.length}枚、台帳の図面は${catalog.targets.length}枚です`);
+  }
+  catalog.targets.forEach((t, i) => {
+    if (!dims[i]) return;
+    const [w, h] = dims[i];
+    if (Math.abs((h / w) / (t.heightPx / t.widthPx) - 1) > 0.01) {
+      problems.push(`図面「${t.title || t.id}」：all.mind は ${w}×${h}、図面画像は ${t.widthPx}×${t.heightPx} で縦横比が違います`);
+    }
+  });
+  if (!problems.length) return;
+  console.warn(problems.join('\n'));
+  const box = $('config-warn');
+  box.textContent = `${problems.join('。')}。all.mind を図面画像から作り直してください（管理用ページ tools/ の「1. 認識用データを作る」）`;
+  box.hidden = false;
 }
 
 async function main() {

@@ -28,6 +28,14 @@
       <option value="lay">正面図に重ねて寝かせる（遺物）</option>
     </select>
 
+    <h2>モデルの上の向き</h2>
+    <select id="up-axis">
+      <option value="0,0,0">+Y が上（glTF の標準）</option>
+      <option value="-90,0,0">+Z が上（Z を上のまま書き出したモデル）</option>
+      <option value="custom" hidden>台帳の値のまま</option>
+    </select>
+    <p class="muted small" id="up-note">Blender の書き出しで「+Y上」を外したモデルは「+Z が上」です。</p>
+
     <h2>位置（図面画像の画素）</h2>
     <div class="row"><label>横 <input id="at-x" type="number" step="0.5"></label><label>縦 <input id="at-y" type="number" step="0.5"></label></div>
     <p class="muted small">モデルをドラッグして動かせます。矢印キーで1画素、Shift＋矢印で10画素。</p>

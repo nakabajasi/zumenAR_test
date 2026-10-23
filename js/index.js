@@ -23,6 +23,8 @@ try {
   if (stamp) document.getElementById('edition').textContent = `${stamp}。`;
 
   box.innerHTML = '';
+  // 図面画像と台帳の食い違いなど（ファイルを差し替えたあとに出る）。詳しくは tools/ の「ファイルの確認」
+  for (const w of catalog.warnings) box.append(el('p', 'callout', w));
   for (const t of catalog.targets) {
     const group = el('section', 'drawing-group');
     group.append(el('h3', 'drawing-title', t.title || t.id));
@@ -30,7 +32,7 @@ try {
     for (const item of t.items) {
       const li = el('li', 'item');
       li.append(el('h3', null, item.title || item.id));
-      li.append(el('p', 'sub', item.subtitle || item.id));
+      if (item.subtitle) li.append(el('p', 'sub', item.subtitle));
       const actions = el('div', 'actions');
       const ar = el('a', 'btn btn-primary', 'かざして見る');
       ar.href = shareUrl('ar.html', { id: item.id });

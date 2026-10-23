@@ -46,24 +46,31 @@ function table(head, rows) {
   return wrap;
 }
 
-const catalog = await loadCatalogData();
+const catalog = await loadCatalogData({ measure: false });
 const list = $('list');
 list.innerHTML = '';
 const targets = catalog.items.filter((it) => it.annotations && typeof it.annotations === 'object');
-if (!targets.length) list.append(el('p', 'muted', '図形と表を使う資料（annotations に glb と table を書いた資料）がありません。'));
+if (!targets.length) list.append(el('p', 'muted', '注記を使う資料がありません。'));
 const report = {};
 for (const item of targets) {
   const section = el('section', 'notes-item');
   section.append(el('h2', 'notes-title', item.title || item.id));
   list.append(section);
   try {
-    const { spec, nodes, table: tbl } = await loadAnnotationSources(item);
+    const src = await loadAnnotationSources(item);
+    if (!src) {
+      section.append(el('p', 'muted', `図形のファイル（${item.annotations.glb}）がないので、注記はありません。`));
+      report[item.id] = { none: true };
+      continue;
+    }
+    const { spec, nodes, table: tbl } = src;
     const m = matchDrawing(nodes, tbl);
+    const layerTitle = tbl && tbl.roles.layer;
     section.append(el('p', 'sub', `図形 ${spec.glb}／表 ${spec.table || '（なし）'}`));
     if (tbl) {
       section.append(el('p', null,
         `表：${tbl.encoding}・見出しは ${tbl.headerLine} 行目・遺構番号の列「${tbl.keyTitle}」・${tbl.rows.length} 件`
-        + `${spec.layer ? `・まとまりの列「${spec.layer}」` : ''}${spec.note ? `・説明の列「${spec.note}」` : ''}`));
+        + `${tbl.roles.layer ? `・まとまりの列「${tbl.roles.layer}」` : ''}${tbl.roles.note ? `・説明の列「${tbl.roles.note}」` : ''}${tbl.roles.label ? `・名前の列「${tbl.roles.label}」` : ''}`));
     }
     section.append(el('p', null, `一致 ${m.matched.length}・表に無い図形 ${m.drawingOnly.length}・この資料に無い表の行 ${m.tableOnly.length}${m.duplicates.length ? `・表の番号の重複 ${m.duplicates.length}` : ''}`));
     if (m.drawingOnly.length) {
@@ -78,8 +85,8 @@ for (const item of targets) {
     }
     if (m.matched.length) {
       section.append(el('h3', null, '一致'));
-      section.append(table(['遺構番号（表）', '種類', 'Blender のオブジェクト', ...(spec.layer ? [spec.layer] : [])],
-        m.matched.map(({ unit, row }) => [row.key, TYPE_JA[unit.type], unit.nodes.map((n) => n.name).join(' / '), ...(spec.layer ? [row.layer] : [])])));
+      section.append(table(['遺構番号（表）', '種類', 'Blender のオブジェクト', ...(layerTitle ? [layerTitle] : [])],
+        m.matched.map(({ unit, row }) => [row.key, TYPE_JA[unit.type], unit.nodes.map((n) => n.name).join(' / '), ...(layerTitle ? [row.layer] : [])])));
     }
     if (m.tableOnly.length) {
       const details = el('details');

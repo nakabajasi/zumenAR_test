@@ -8,41 +8,24 @@
   },
   "targets": [
     {
-      "id": "kidan_plan",
       "title": "基壇 遺構平面図",
-      "source": "targets/src/kidan_plan.jpg",
-      "widthPx": 2223,
-      "heightPx": 2484,
       "pxPerMeter": 118,
-      "credit": "",
-      "viewerImage": "targets/src/kidan_plan.jpg"
+      "widthPx": 2223,
+      "heightPx": 2484
     }
   ],
   "items": [
     {
-      "id": "kidan",
-      "target": "kidan_plan",
       "title": "基壇",
-      "subtitle": "",
       "model": {
-        "src": "data/kidan/model.glb",
-        "rotationDeg": [
-          -90,
-          0,
-          0
-        ],
-        "metersPerUnit": 1
+        "rotationDeg": [-90, 0, 0]
       },
       "display": {
         "mode": "plan",
-        "at": [
-          1240.5,
-          1130.5
-        ],
+        "at": [1240.5, 1130.5],
         "headingDeg": 0,
         "ground": "top"
-      },
-      "meta": "data/kidan/meta.json"
+      }
     }
   ]
 }

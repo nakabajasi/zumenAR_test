@@ -1,9 +1,19 @@
 // 注記（アノテーション）データの読み込み。three.js を使わないページ（注記一覧・照合ツール）からも使う。
 //
-// 台帳の annotations に書けるもの：
+// 決まった置き場所（台帳に何も書かなくてよい）：
+//   data/annotation.glb … 図面のベクトルデータを Blender で 3D に置いて書き出した図形（無ければ注記なし）
+//   data/annotation.csv … 現場で作った遺構一覧表
+//   （資料が2つ以上なら data/<id>/ の中。catalog.js を参照）
+// 表の読み方（台帳の annotations に書けば変えられる。書かなければ次のとおり）：
+//   key   … 遺構番号の列。既定は表の左端の列
+//   layer … まとめ方（レイヤー）に使う列。既定は「種別」「種類」「分類」の列があればそれ
+//   note  … 説明に使う列。既定は「備考」「説明」の列があればそれ
+//   label … 名前に使う列。既定は「名称」の列があればそれ、なければ遺構番号
+//   残りの列はすべて、そのまま項目として出す
+// 台帳の annotations には、ほかの場所のファイルも書ける：
+//   { "glb": "data/x/notes.glb", "table": "data/遺構一覧.csv", "key": "遺構番号" }
 //   "data/x/annotations.json" … JSON で書いた注記（従来の形）
-//   { "glb": "data/x/notes.glb", "table": "data/遺構一覧.csv", "key": "遺構番号", "layer": "種別", "note": "備考" }
-//       … 図面のベクトルデータを Blender で 3D に置いて書き出した図形と、現場で作った遺構一覧表
+//   false … 注記を使わない
 //
 // 考え方：
 //   図形（GLB）から使うのは、形・位置とオブジェクト名（＝遺構番号）だけ。図面データの属性・カスタムプロパティ・色は使わない
@@ -31,16 +41,19 @@ export async function loadAnnotationData(item) {
     return res.json();
   }
   const src = await loadAnnotationSources(item, { tableRequired: false });
+  if (!src) return null; // 図形のファイルが無い＝注記なし
   const data = fromDrawing(src.nodes, src.table, src.spec);
   if (src.spec.table && !src.table) data.warnings.unshift(`表 ${src.spec.table} を読み込めません。図形だけを表示しています`);
   return data;
 }
 
-// 図形（GLB）と表を読む。照合ツールからも使う
+// 図形（GLB）と表を読む。照合ツールからも使う。決まった場所に図形のファイルが無ければ null
 export async function loadAnnotationSources(item, { tableRequired = true } = {}) {
+  if (!item.annotations) return null;
   const spec = typeof item.annotations === 'string' ? { glb: item.annotations } : { ...item.annotations };
   const [glb, table] = await Promise.all([
     fetch(siteUrl(spec.glb), { cache: 'no-cache' }).then((res) => {
+      if (res.status === 404 && spec.optional) return null;
       if (!res.ok) throw new Error(`${spec.glb} を読み込めません (${res.status})`);
       return res.arrayBuffer();
     }),
@@ -50,6 +63,7 @@ export async function loadAnnotationSources(item, { tableRequired = true } = {})
       return null;
     }) : null,
   ]);
+  if (!glb) return null;
   const decoded = table ? decodeText(table) : null;
   return {
     spec,
@@ -91,16 +105,25 @@ function splitCsv(text) {
   return rows;
 }
 
+// 列の役目を、台帳で列名を指定しなかったときに探す見出し
+const ROLE_TITLES = {
+  layer: ['種別', '種類', '分類', 'レイヤー'],
+  note: ['備考', '説明', 'メモ'],
+  label: ['名称', '名前'],
+};
+
 /**
  * 遺構一覧表を読む。spec.key（遺構番号の列名）を見出しに含む行を見出し行とみなすので、
- * 表の上に表題や作成日の行があってもよい。spec.key が無ければ、最初の空でない行を見出し、左端の列を key とする
+ * 表の上に表題や作成日の行があってもよい。spec.key が無ければ、文字の入ったセルが2つ以上ある最初の行を見出し、
+ * その左端の列を key とする（表題の行は1セルだけなので飛ばされる）
  */
 export function parseTable(text, spec = {}) {
   const raw = splitCsv(text);
   const nonEmpty = raw.map((r, i) => [r, i]).filter(([r]) => r.some((v) => v.trim() !== ''));
   if (!nonEmpty.length) throw new Error('表が空です');
   const want = spec.key ? normalizeKey(spec.key) : null;
-  const found = want ? nonEmpty.find(([r]) => r.some((v) => normalizeKey(v) === want)) : nonEmpty[0];
+  const found = want ? nonEmpty.find(([r]) => r.some((v) => normalizeKey(v) === want))
+    : (nonEmpty.find(([r]) => r.filter((v) => v.trim() !== '').length >= 2) || nonEmpty[0]);
   if (!found) throw new Error(`表に「${spec.key}」の列が見つかりません（台帳の annotations.key と表の見出しを確かめてください）`);
   const [header, headerIndex] = found;
   // 見出しの重複には番号を足す。空の見出しの列は使わない
@@ -114,9 +137,16 @@ export function parseTable(text, spec = {}) {
   });
   const col = (name) => (name ? titles.findIndex((t) => normalizeKey(t) === normalizeKey(name)) : -1);
   const keyCol = want ? col(spec.key) : titles.findIndex((t) => t);
-  const roles = { label: col(spec.label), note: col(spec.note), layer: col(spec.layer) };
-  for (const [role, i] of Object.entries(roles)) {
-    if (spec[role] && i < 0) throw new Error(`表に「${spec[role]}」の列が見つかりません（台帳の annotations.${role}）`);
+  const roles = {};
+  for (const role of ['label', 'note', 'layer']) {
+    if (spec[role]) {
+      roles[role] = col(spec[role]);
+      if (roles[role] < 0) throw new Error(`表に「${spec[role]}」の列が見つかりません（台帳の annotations.${role}）`);
+    } else if (spec[role] === false) {
+      roles[role] = -1;
+    } else {
+      roles[role] = ROLE_TITLES[role].map(col).find((i) => i >= 0 && i !== keyCol) ?? -1;
+    }
   }
   const rows = [];
   for (let r = headerIndex + 1; r < raw.length; r++) {
@@ -137,7 +167,8 @@ export function parseTable(text, spec = {}) {
       fields,
     });
   }
-  return { keyTitle: titles[keyCol], headerLine: headerIndex + 1, columns: titles.filter(Boolean), rows };
+  const roleTitles = Object.fromEntries(Object.entries(roles).map(([k, i]) => [k, i >= 0 ? titles[i] : null]));
+  return { keyTitle: titles[keyCol], headerLine: headerIndex + 1, columns: titles.filter(Boolean), roles: roleTitles, rows };
 }
 
 /* ---------- GLB（three.js を使わずに読む） ---------- */
@@ -145,17 +176,81 @@ export function parseTable(text, spec = {}) {
 const COMPONENTS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
 const ARRAYS = { 5120: Int8Array, 5121: Uint8Array, 5122: Int16Array, 5123: Uint16Array, 5125: Uint32Array, 5126: Float32Array };
 
-function readGlb(buffer, path) {
+// GLB を JSON 部分とバイナリ部分に分ける
+export function parseGlb(buffer, path) {
   const view = new DataView(buffer);
-  if (view.getUint32(0, true) !== 0x46546c67) throw new Error(`${path} は GLB ではありません`);
+  if (buffer.byteLength < 20 || view.getUint32(0, true) !== 0x46546c67) throw new Error(`${path} は GLB ではありません`);
   let offset = 12, json = null, bin = null;
-  while (offset < buffer.byteLength) {
+  while (offset + 8 <= buffer.byteLength) {
     const length = view.getUint32(offset, true);
     const type = view.getUint32(offset + 4, true);
     if (type === 0x4e4f534a) json = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, offset + 8, length)));
     else if (type === 0x004e4942) bin = new Uint8Array(buffer, offset + 8, length);
     offset += 8 + length;
   }
+  if (!json) throw new Error(`${path} を読めません`);
+  return { json, bin };
+}
+
+// 各ノードの位置・向き・大きさを、シーンの原点から見た 4×4 行列（列ごとに並べたもの）にして順に渡す
+const mul = (A, B) => {
+  const C = new Array(16).fill(0);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) C[c * 4 + r] += A[k * 4 + r] * B[c * 4 + k];
+  return C;
+};
+const localMatrix = (node) => {
+  if (node.matrix) return node.matrix.slice();
+  const [x, y, z, w] = node.rotation || [0, 0, 0, 1];
+  const [sx, sy, sz] = node.scale || [1, 1, 1];
+  const [tx, ty, tz] = node.translation || [0, 0, 0];
+  return [
+    (1 - 2 * (y * y + z * z)) * sx, 2 * (x * y + z * w) * sx, 2 * (x * z - y * w) * sx, 0,
+    2 * (x * y - z * w) * sy, (1 - 2 * (x * x + z * z)) * sy, 2 * (y * z + x * w) * sy, 0,
+    2 * (x * z + y * w) * sz, 2 * (y * z - x * w) * sz, (1 - 2 * (x * x + y * y)) * sz, 0,
+    tx, ty, tz, 1,
+  ];
+};
+const applyMatrix = (m, x, y, z) => [
+  m[0] * x + m[4] * y + m[8] * z + m[12],
+  m[1] * x + m[5] * y + m[9] * z + m[13],
+  m[2] * x + m[6] * y + m[10] * z + m[14],
+];
+function walkNodes(json, visit) {
+  const walk = (index, parent) => {
+    const node = json.nodes[index];
+    const world = mul(parent, localMatrix(node));
+    visit(node, index, world);
+    for (const child of node.children || []) walk(child, world);
+  };
+  const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  const scene = (json.scenes || [])[json.scene || 0];
+  for (const root of (scene ? scene.nodes : [])) walk(root, identity);
+}
+
+/**
+ * GLB の中身の範囲（GLB の座標）。点の位置の min・max だけを使うので、Draco で圧縮したモデルでも読める。
+ * 図形とモデルが同じ座標で書き出されているかの確認に使う
+ */
+export function glbBounds(buffer, path = 'GLB') {
+  const { json } = parseGlb(buffer, path);
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const add = (p) => { for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], p[k]); max[k] = Math.max(max[k], p[k]); } };
+  walkNodes(json, (node, index, world) => {
+    if (node.mesh == null) {
+      if (!(node.children || []).length) add(applyMatrix(world, 0, 0, 0)); // エンプティ（点の注記）
+      return;
+    }
+    for (const prim of json.meshes[node.mesh].primitives) {
+      const a = json.accessors[prim.attributes.POSITION];
+      if (!a || !a.min || !a.max) continue;
+      for (const x of [a.min[0], a.max[0]]) for (const y of [a.min[1], a.max[1]]) for (const z of [a.min[2], a.max[2]]) add(applyMatrix(world, x, y, z));
+    }
+  });
+  return Number.isFinite(min[0]) ? { min, max } : null;
+}
+
+function readGlb(buffer, path) {
+  const { json, bin } = parseGlb(buffer, path);
   const used = json.extensionsRequired || [];
   if (used.length) throw new Error(`${path} は圧縮などの拡張（${used.join(', ')}）を使っています。注記の GLB は圧縮せずに書き出してください`);
 
@@ -175,42 +270,15 @@ function readGlb(buffer, path) {
     return { data: out, n, count: a.count };
   };
 
-  // 各ノードの位置・向き・大きさを、シーンの原点から見た 4×4 行列（列ごとに並べたもの）にする
-  const mul = (A, B) => {
-    const C = new Array(16).fill(0);
-    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) C[c * 4 + r] += A[k * 4 + r] * B[c * 4 + k];
-    return C;
-  };
-  const local = (node) => {
-    if (node.matrix) return node.matrix.slice();
-    const [x, y, z, w] = node.rotation || [0, 0, 0, 1];
-    const [sx, sy, sz] = node.scale || [1, 1, 1];
-    const [tx, ty, tz] = node.translation || [0, 0, 0];
-    return [
-      (1 - 2 * (y * y + z * z)) * sx, 2 * (x * y + z * w) * sx, 2 * (x * z - y * w) * sx, 0,
-      2 * (x * y - z * w) * sy, (1 - 2 * (x * x + z * z)) * sy, 2 * (y * z + x * w) * sy, 0,
-      2 * (x * z + y * w) * sz, 2 * (y * z - x * w) * sz, (1 - 2 * (x * x + y * y)) * sz, 0,
-      tx, ty, tz, 1,
-    ];
-  };
   const nodes = [];
-  const walk = (index, parent) => {
-    const node = json.nodes[index];
-    const world = mul(parent, local(node));
+  walkNodes(json, (node, index, world) => {
     const geo = { points: [], segments: [], triangles: [], positions: [] };
     if (node.mesh != null) {
       for (const prim of json.meshes[node.mesh].primitives) {
         if (prim.attributes.POSITION == null) continue;
         const pos = accessor(prim.attributes.POSITION);
         const base = geo.positions.length;
-        for (let i = 0; i < pos.count; i++) {
-          const x = pos.data[i * 3], y = pos.data[i * 3 + 1], z = pos.data[i * 3 + 2];
-          geo.positions.push([
-            world[0] * x + world[4] * y + world[8] * z + world[12],
-            world[1] * x + world[5] * y + world[9] * z + world[13],
-            world[2] * x + world[6] * y + world[10] * z + world[14],
-          ]);
-        }
+        for (let i = 0; i < pos.count; i++) geo.positions.push(applyMatrix(world, pos.data[i * 3], pos.data[i * 3 + 1], pos.data[i * 3 + 2]));
         const idx = prim.indices != null ? Array.from(accessor(prim.indices).data, (v) => v + base)
           : Array.from({ length: pos.count }, (_, i) => i + base);
         const mode = prim.mode == null ? 4 : prim.mode;
@@ -225,11 +293,7 @@ function readGlb(buffer, path) {
       }
     }
     nodes.push({ name: node.name || `node${index}`, world, children: (node.children || []).length, geo });
-    for (const child of node.children || []) walk(child, world);
-  };
-  const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-  const scene = json.scenes[json.scene || 0];
-  for (const root of scene.nodes) walk(root, identity);
+  });
   return nodes;
 }
 
@@ -422,7 +486,7 @@ function fromDrawing(nodes, table, spec) {
       note: row ? row.note : '',
       fields: row ? { ...row.fields } : {},
     };
-    if (spec && spec.key && row && item.label !== row.key) item.fields = { [table.keyTitle]: row.key, ...item.fields };
+    if (row && item.label !== row.key) item.fields = { [table.keyTitle]: row.key, ...item.fields };
     if (type === 'Point') item.position = shape.position;
     else {
       item.paths = shape.paths;

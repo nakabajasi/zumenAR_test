@@ -14,7 +14,7 @@ const TYPE = { Point: '点', Line: '線', Area: '面' };
 async function json(path) {
   if (!path) return null;
   const res = await fetch(siteUrl(path), { cache: 'no-cache' });
-  return res.ok ? res.json() : null;
+  return res.ok ? res.json().catch(() => null) : null;
 }
 
 // 線は折れ線の長さ、面は境界の一周の長さ（GLB の座標 × metersPerUnit。glTF の単位はメートル）。
@@ -29,7 +29,7 @@ function lengthOf(it, type, scale) {
   return paths.reduce((sum, p) => sum + pathLength(p.points, p.closed === undefined ? type === 'Area' : p.closed), 0) * scale;
 }
 
-const catalog = await loadCatalogData();
+const catalog = await loadCatalogData({ measure: false });
 const only = new URLSearchParams(location.search).get('id');
 const items = only ? catalog.items.filter((it) => it.id === only) : catalog.items;
 if (only) $('link-all').hidden = false;

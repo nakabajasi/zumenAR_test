@@ -390,7 +390,9 @@ function checkMindFile() {
 async function main() {
   catalog = await loadCatalog();
   preferred = itemFromQuery(catalog);
-  const preferredTarget = (preferred && preferred.drawing) || targetFromQuery(catalog);
+  // 図面が1枚だけなら、指定がなくてもその図面のモデルを先に読み込む
+  const preferredTarget = (preferred && preferred.drawing) || targetFromQuery(catalog)
+    || (catalog.targets.length === 1 ? catalog.targets[0] : null);
   pendingNote = new URLSearchParams(location.search).get('note');
   if (preferred) $('link-viewer').href = `viewer.html?id=${encodeURIComponent(preferred.id)}`;
   else if (preferredTarget && preferredTarget.items[0]) $('link-viewer').href = `viewer.html?id=${encodeURIComponent(preferredTarget.items[0].id)}`;

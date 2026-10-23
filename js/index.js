@@ -13,6 +13,7 @@ if (/Line\/|FBAN|FBAV|Instagram|Twitter|MicroMessenger/i.test(navigator.userAgen
 }
 
 const box = document.getElementById('items');
+const warnings = document.getElementById('warnings');
 try {
   const catalog = await loadCatalogData();
   const { site } = catalog;
@@ -22,9 +23,10 @@ try {
   const stamp = [site.edition ? `データ版 ${site.edition}` : '', site.cite || ''].filter(Boolean).join('　');
   if (stamp) document.getElementById('edition').textContent = `${stamp}。`;
 
-  box.innerHTML = '';
   // 図面画像と台帳の食い違いなど（ファイルを差し替えたあとに出る）。詳しくは tools/ の「ファイルの確認」
-  for (const w of catalog.warnings) box.append(el('p', 'callout', w));
+  for (const w of catalog.warnings) warnings.append(el('p', 'callout', w));
+  // 資料が1つなら上の3つのボタンで足りる。2つ以上のときだけ、資料ごとの入口を並べる
+  document.getElementById('items-section').hidden = catalog.items.length < 2;
   for (const t of catalog.targets) {
     const group = el('section', 'drawing-group');
     group.append(el('h3', 'drawing-title', t.title || t.id));
@@ -48,6 +50,5 @@ try {
     box.append(group);
   }
 } catch (err) {
-  box.innerHTML = '';
-  box.append(el('p', 'callout', err.message));
+  warnings.append(el('p', 'callout', err.message));
 }

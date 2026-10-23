@@ -32,10 +32,14 @@
     <li>図面が画面いっぱいになるようにかざす。見失ったら、もう一度図面を画面いっぱいに映す。</li>
     <li>モデルをたたくと資料情報と注記が出る。横になぞって回す／2本指で拡大する。</li>
   </ol>
-  <p><a class="btn btn-primary" href="ar.html">図面にかざす</a> <a class="btn" href="notes.html">注記一覧</a></p>
+  <p class="actions-row"><a class="btn btn-primary" href="ar.html">図面にかざす</a> <a class="btn" href="viewer.html">3Dだけ見る</a> <a class="btn" href="notes.html">注記一覧</a></p>
+  <div id="warnings"></div>
 
-  <h2>図面と資料</h2>
-  <div id="items"><p class="muted">読み込み中…</p></div>
+  <!-- 資料が2つ以上あるときだけ出す -->
+  <section id="items-section" hidden>
+    <h2>図面と資料</h2>
+    <div id="items"></div>
+  </section>
 
   <footer class="foot">
     <span id="edition"></span>

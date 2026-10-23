@@ -50,6 +50,9 @@ a { color: inherit; }
   text-decoration: none; font-weight: 600; font-size: 0.95rem; cursor: pointer;
 }
 .btn-primary { background: var(--shu); border-color: var(--shu); color: #fff; }
+/* 一覧の入口のボタン：スマホでも1行に並べ、幅をそろえる（とても狭い画面では折り返す） */
+.actions-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.actions-row .btn { flex: 1 1 auto; padding: 0 10px; white-space: nowrap; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .callout { border-left: 3px solid var(--shu); background: var(--paper-2); padding: 10px 12px; font-size: 0.9rem; margin: 14px 0; }
 .callout[hidden] { display: none; }

@@ -49,6 +49,12 @@ const SEE_THROUGH = 0.45; // 透かすときの濃さ
  *      └ raw   … GLBの座標そのまま。アノテーションはここに入れる
  */
 export async function loadItemObject(item, onProgress) {
+  const model = await loadModel(item, onProgress);
+  placeFromCoordinates(item, model);
+  return model;
+}
+
+async function loadModel(item, onProgress) {
   const gltf = await gltfLoader.loadAsync(url(item.model.src), (e) => {
     if (onProgress && e.total) onProgress(e.loaded / e.total);
   });
@@ -129,6 +135,7 @@ export async function loadItemObject(item, onProgress) {
 
   return {
     unit, raw, size, maxDim, triangles,
+    center: center.clone(),   // 向きを直したあとの外形の中心（GLB の座標の単位）
     // 単位化後の外寸（最大寸法＝1）。置き方の計算に使う
     unitSize: size.clone().multiplyScalar(s),
     get mode() { return mode; },
@@ -177,6 +184,22 @@ export function displayScale(item, model) {
     return DEFAULT_FIT;
   }
   return size.value == null ? DEFAULT_FIT : size.value;
+}
+
+// 図面の実寸が書いてあって、置き場所（display.at）を書いていない資料は、モデル自身の座標で図面に重ねる。
+// モデルの座標：図面画像の左下が原点、右が X、上が Y（Blender の向き。three.js では X と -Z）、単位 m
+export const placedByCoordinates = (item) => {
+  const d = item.display || {};
+  const t = item.drawing || {};
+  return displayMode(item) === 'plan' && (!Array.isArray(d.at) || d.fromCoordinates) && !d.anchor
+    && (Number(t.realWidthM) > 0 || Number(t.realHeightM) > 0);
+};
+// モデルを読み込んだら、モデルの座標から図面上の置き場所（画素）を決めて display.at に入れる（方位は 0）
+export function placeFromCoordinates(item, model) {
+  if (!placedByCoordinates(item) || !item.drawing.pxPerMeter) return false;
+  const k = metersPerUnit(item) * item.drawing.pxPerMeter;
+  item.display = { ...(item.display || {}), at: [model.center.x * k, item.drawing.heightPx + model.center.z * k], headingDeg: 0, fromCoordinates: true };
+  return true;
 }
 
 // モデルの置き場所（図面の座標）。display.at は図面画像の画素、旧形式の anchor は 0〜1 の割合

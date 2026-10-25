@@ -2,7 +2,8 @@
 import * as THREE from 'three';
 // 読み込む順番に意味がある：tracking.js が先。MindAR の2つのファイルはどちらも window.MINDAR.IMAGE に
 // 部品を登録するが、tracking.js が使う側は丸ごと置き換え、下の three 用は追記する。逆順だと追記分が消える
-import { TRACKING_DEFAULTS, trackingStats, installTracking } from './tracking.js';
+import { TRACKING_DEFAULTS, trackingStats, installTracking, addTrackingLevels } from './tracking.js';
+import { ZOOM_PURPOSE, ZOOM_SIZES } from './trackpoints.js';
 import { MindARThree } from '../lib/mindar/mindar-image-three.prod.js';
 import {
   url, loadCatalog, itemFromQuery, targetFromQuery, fetchJson, isInAppBrowser, loadItemObject, addLights,
@@ -77,6 +78,7 @@ function ensureLoaded(slot) {
     loadAnnotationData(item).catch((err) => { console.warn(err); return null; }),
   ]).then(([model, meta, annoData]) => {
     const pose = buildPose(item, model);
+    slot.place.position.copy(placePosition(item));   // モデルの座標で置く資料は、読み込んで初めて置き場所が決まる
     slot.user.add(pose);
     const annotations = buildAnnotations(annoData, model.maxDim);
     model.raw.add(annotations.group);
@@ -242,7 +244,7 @@ let heals = 0;
 function watchdog(now) {
   if (!running) return;
   const t = trackingStats;
-  if (t.errorStreak < 5 && now - t.lastFrameAt < 3000) return;
+  if (t.errorStreak < 5 && now - t.lastFrameAt < tracking.stallMs) return;
   if (now - healedAt < 8000) {
     // 作り直した直後にまた止まった：自動では直せない
     if (now - healedAt > 3000) { showHint('追跡が止まりました。「探し直す」を押してください'); $('recover').hidden = false; }
@@ -278,6 +280,8 @@ function updateDebug(now) {
     `状態 ${t.state}${active && active.stabilizer.held ? '（固定表示）' : ''}`,
     `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,
     `手がかり ${t.points}点（表示中の最少 ${Number.isFinite(t.minPointsSeen) ? t.minPointsSeen : '-'}）`,
+    `見本 ${t.level || '-'}（持っている段 ${t.levels || '-'}）  やり直し ${t.retries}`,
+    `直近の試し ${(t.tryLog || []).join(' ')}`,
     `発見 ${t.detections}  却下 ${t.rejected}`,
     `探索 ${Object.keys(t.tries).map((k) => `${k} ${t.hits[k] || 0}/${t.tries[k]}`).join('  ')}`,
     `探し直し ${t.fallbacks}  見失い ${t.lost}  作り直し ${heals}`,
@@ -352,6 +356,7 @@ async function start(preferredTarget) {
   mindar.renderer.setAnimationLoop(render);
   setupGestures();
   checkMindFile();
+  prepareZoomLevels();
 
   // QRで図面や資料を指定して開いた場合は、認識を待たずにその図面のモデルを先に読み込んでおく
   const first = preferredTarget ? stages[preferredTarget.index] : null;
@@ -363,6 +368,27 @@ async function start(preferredTarget) {
     if (document.hidden || !running) return;
     trackingStats.lastFrameAt = performance.now(); // 画面を離れていた時間を「処理が止まった」と数えない
     if (mindar.video && mindar.video.paused) mindar.video.play().catch(() => {});
+  });
+}
+
+// 近づいて見るための細かい見本。all.mind に入っていなければ（MindAR 公式のページで作った all.mind など）、
+// 図面画像から別の処理で作り、できた段から使う。そのあいだも標準の見本で追跡は続く
+let zoomWorkerStarted = false;
+function prepareZoomLevels() {
+  if (zoomWorkerStarted || !tracking.multiLevel) return;
+  zoomWorkerStarted = true;
+  const lists = (mindar.controller.tracker && mindar.controller.tracker.trackingDataList) || [];
+  catalog.targets.forEach((t, i) => {
+    if (!lists[i] || lists[i].some((k) => k.purpose === ZOOM_PURPOSE)) return;
+    let worker;
+    try { worker = new Worker(new URL('./levels-worker.js', import.meta.url), { type: 'module' }); } catch (err) { console.warn('細かい見本を作れません', err); return; }
+    worker.onmessage = (e) => {
+      const m = e.data;
+      if (m.level) addTrackingLevels(m.targetIndex, [m.level]);
+      if (m.error) console.warn(`細かい見本を作れません：${m.error}`);
+      if (m.done || m.error) { if (m.done) console.info(`図面「${t.id}」の細かい見本を作りました（${m.ms}ms）`); worker.terminate(); }
+    };
+    worker.postMessage({ url: url(t.source), targetIndex: i, sizes: ZOOM_SIZES });
   });
 }
 
@@ -446,7 +472,7 @@ async function main() {
 
   window.__ar = { // 確認用
     get mindar() { return mindar; }, get stages() { return stages; }, get slots() { return slots; },
-    get active() { return active; }, get current() { return current; }, select, restart, tracking, stats: trackingStats,
+    get active() { return active; }, get current() { return current; }, get heals() { return heals; }, select, restart, tracking, stats: trackingStats,
   };
 }
 

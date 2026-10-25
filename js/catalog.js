@@ -11,6 +11,10 @@
 // 図面や資料を2つ以上にするときは、data/<id>/ に分けて同じ名前で置く（1つしかないものは data/ にそのまま）。
 // 置き場所は "folder" で変えられる。
 //
+// 図面の実寸（targets の realWidthM・realHeightM、m）を書けば、3Dモデルは自分の座標のまま図面に重なる。
+// モデルの座標は、図面画像の左下を原点、右を X、上を Y とした m 単位（Blender で図面画像を実寸で原点から敷き、
+// その上にモデルを合わせて書き出したもの）。このとき資料の display.at・headingDeg は書かない
+//
 // 台帳の形：
 //   targets … 図面（認識の対象）。並び順が all.mind の中の順番になる
 //   items   … 資料（3Dモデル1つ）。target に図面の id を書く（図面が1枚なら省略）
@@ -134,6 +138,17 @@ async function imageSize(path) {
   });
 }
 
+// 図面画像の実寸（m）から、画像の 1m が何画素かを決める。縦と横の両方が書いてあれば、食い違いがないか確かめる
+function applyRealSize(c, t) {
+  const w = Number(t.realWidthM), h = Number(t.realHeightM);
+  if (!(w > 0) && !(h > 0)) return;
+  const fromW = w > 0 ? t.widthPx / w : null, fromH = h > 0 ? t.heightPx / h : null;
+  t.pxPerMeter = fromW || fromH;
+  if (fromW && fromH && Math.abs(fromW / fromH - 1) > 0.005) {
+    c.warnings.push(`図面「${t.title || t.id}」の実寸 ${w}×${h} m は、画像の縦横比（${t.widthPx}×${t.heightPx} 画素）と合いません（横から 1m＝${fromW.toFixed(2)} 画素、縦から ${fromH.toFixed(2)} 画素）。横の値で表示します`);
+  }
+}
+
 async function measureTargets(c) {
   await Promise.all(c.targets.map(async (t) => {
     let size;
@@ -141,12 +156,13 @@ async function measureTargets(c) {
       size = await imageSize(t.source);
     } catch (err) {
       // 図面画像を公開しない運用（台帳に大きさだけ書く）もできる。差し替え忘れは tools/ の「ファイルの確認」で出る
-      if (t.widthPx && t.heightPx) { console.warn(`${err.message}（台帳の大きさ ${t.widthPx}×${t.heightPx} で続けます）`); return; }
+      if (t.widthPx && t.heightPx) { console.warn(`${err.message}（台帳の大きさ ${t.widthPx}×${t.heightPx} で続けます）`); applyRealSize(c, t); return; }
       throw err;
     }
     const refW = t.widthPx, refH = t.heightPx;
     t.widthPx = size.width;
     t.heightPx = size.height;
+    applyRealSize(c, t);
     if (!refW || !refH || (refW === size.width && refH === size.height)) return;
     const s = size.width / refW;
     const aspectGap = Math.abs((size.height / size.width) / (refH / refW) - 1);
@@ -155,7 +171,7 @@ async function measureTargets(c) {
     } else {
       console.info(`図面「${t.id}」の画像が ${refW}×${refH} から ${size.width}×${size.height} に変わったので、位置と縮尺を ${s.toFixed(4)} 倍して使います`);
     }
-    if (t.pxPerMeter) t.pxPerMeter *= s;
+    if (t.pxPerMeter && !t.realWidthM && !t.realHeightM) t.pxPerMeter *= s;   // 実寸で書いてあれば、画素数が変わっても直す必要はない
     for (const it of t.items) {
       if (it.display && Array.isArray(it.display.at)) it.display.at = it.display.at.map((v) => v * s);
       if (it.display && it.display.size && it.display.size.pxPerMeter) it.display.size.pxPerMeter *= s;

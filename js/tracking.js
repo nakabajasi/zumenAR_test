@@ -29,7 +29,8 @@ export const TRACKING_DEFAULTS = {
   obliqueSearch: 1,    // 1＝斜めから見た図面も探す
   searchTilts: [50, 65],   // 斜めの探索で仮定する傾き（度）。図面の奥側が画面の上に来る向き（机の上の図面）
   searchSideTilts: [],     // 同上、奥側が画面の左右に来る向き（壁の図面を横から見る場合。例 [50]）
-  stillCutoff: 0.25,   // 静止時のならし方（Hz）。移動中は偏差と速度に応じて追従を速める
+  stillCutoff: 0.12,   // 静止時のならし方（Hz）。小さいほど強くならす
+  motionThreshold: 2, // 動き始めの判定閾値の倍率（0.5〜4）。大きいほど細かな揺れで追従を速めにくい
   posFollow: 15,       // 位置：動きの速さに応じて追従を速める度合い
   rotFollow: 7,        // 向き：同上
   speedCutoff: 1.0,    // 動きの速さを見積もるときのならし方（Hz）

@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 // 読み込む順番に意味がある：tracking.js が先。MindAR の2つのファイルはどちらも window.MINDAR.IMAGE に
 // 部品を登録するが、tracking.js が使う側は丸ごと置き換え、下の three 用は追記する。逆順だと追記分が消える
-import { TRACKING_DEFAULTS, trackingStats, installTracking, addTrackingLevels, releaseTrackingLevels } from './tracking.js?rev=steady-20261027';
+import { TRACKING_DEFAULTS, trackingStats, installTracking, addTrackingLevels, releaseTrackingLevels } from './tracking.js?rev=steady-strong-20261027';
 import { ZOOM_PURPOSE, ZOOM_SIZES } from './trackpoints.js?rev=local-20261026';
 import { MindARThree } from '../lib/mindar/mindar-image-three.prod.js';
 import {
@@ -12,7 +12,7 @@ import {
 import { createPanel } from './panel.js';
 import { loadAnnotationData } from './annotations.js';
 import { fetchOptional, MIND_FILE } from './catalog.js';
-import { PoseStabilizer } from './stabilizer.js?rev=steady-20261027';
+import { PoseStabilizer } from './stabilizer.js?rev=steady-strong-20261027';
 
 const $ = (id) => document.getElementById(id);
 const stage = $('stage');
@@ -279,7 +279,8 @@ function updateDebug(now) {
   const v = mindar.video;
   debugBox.textContent = [
     '局所追跡 2026-10-26',
-    '手ぶれ補正 2026-10-27',
+    '手ぶれ補正・強化版 2026-10-27',
+    `動作閾値 ${active?.stabilizer.motionThreshold ?? tracking.motionThreshold}倍 / 静止補正 ${Math.max(.05,Number(tracking.stillCutoff))}Hz`,
     `補正 ${active?.stabilizer.diagnostics.state || '待機'} / 急変等の除外 ${active?.stabilizer.diagnostics.rejected || 0}回`,
     `状態 ${t.state}${active && active.stabilizer.held ? '（固定表示）' : ''}`,
     `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,

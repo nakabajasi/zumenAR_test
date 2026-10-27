@@ -44,6 +44,8 @@ export class PoseStabilizer {
     this.diagnostics.state='待機';
   }
 
+  get motionThreshold() {return clamp(value(this.cfg,'motionThreshold',2),.5,4);}
+
   // 光軸と紙面の交点を図面全体の座標で求める。図面外なら最も近い端に制限する。
   _choosePivot() {
     inv.copy(this._filteredQ).invert();
@@ -113,12 +115,15 @@ export class PoseStabilizer {
       const half=Math.acos(clamp(dq.w,-1,1)),sin=Math.sin(half),k=sin>1e-6?2*half/(sin*gap):0;
       velocity.set(dq.x*k,dq.y*k,dq.z*k);
       const rotCoherent=coherence(this._rotSteps,velocity);this._velQ.lerp(velocity,speedAlpha);
-      const base=Math.max(.05,value(this.cfg,'stillCutoff',.25));
+      const base=Math.max(.05,value(this.cfg,'stillCutoff',.12)),threshold=this.motionThreshold;
       // 微小な往復では速度推定の残りを増幅しない。偏差が蓄積する実際の移動では追従を速める。
-      const posMotion=Math.max(posCoherent,clamp((screenDelta-.005)/.015,0,1),clamp((depthDelta-.035)/.07,0,1));
-      const rotMotion=Math.max(rotCoherent,clamp((angle-.035)/.10,0,1));
-      const posHz=base+2*Math.max(0,value(this.cfg,'posFollow',15))*Math.max(0,this._velP.length()-(.025-.02*posCoherent))*posMotion;
-      const rotHz=base+4*Math.max(0,value(this.cfg,'rotFollow',7))*Math.max(0,this._velQ.length()-(.035-.025*rotCoherent))*rotMotion;
+      const posMotion=Math.max(posCoherent,clamp((screenDelta-.005*threshold)/(.015*threshold),0,1),clamp((depthDelta-.035*threshold)/(.07*threshold),0,1));
+      const rotMotion=Math.max(rotCoherent,clamp((angle-.035*threshold)/(.10*threshold),0,1));
+      // 継続した一方向の動きは従来の低い速度閾値を使い、ゆっくり動かしても追従する。
+      const posFloor=.025*threshold*(1-posCoherent)+.005*posCoherent;
+      const rotFloor=.035*threshold*(1-rotCoherent)+.01*rotCoherent;
+      const posHz=base+2*Math.max(0,value(this.cfg,'posFollow',15))*Math.max(0,this._velP.length()-posFloor)*posMotion;
+      const rotHz=base+4*Math.max(0,value(this.cfg,'rotFollow',7))*Math.max(0,this._velQ.length()-rotFloor)*rotMotion;
       blend(this._filteredP,this._filteredQ,this._filteredS,p,q,size,this._pivot,
         alpha(confirmed?Math.max(5,posHz):posHz,gap),alpha(confirmed?Math.max(5,rotHz):rotHz,gap),alpha(base,gap));
       this._lastP.copy(p);this._lastQ.copy(q);this._lastSize=size;this._lastAt=at;

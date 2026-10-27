@@ -8,7 +8,8 @@ const root=path.resolve(__dirname,'..');
  const T=three.namespace;
  async function load(src){const m=new vm.SourceTextModule(src,{context});await m.link(()=>three);await m.evaluate();return m.namespace.PoseStabilizer;}
  const Filter=await load(fs.readFileSync(root+'/js/stabilizer.js','utf8'));
- const cfg={hold:1,stillCutoff:.25,posFollow:15,rotFollow:7,speedCutoff:1};
+ const defaults=(src)=>vm.runInContext('('+src.match(/export const TRACKING_DEFAULTS = (\{[\s\S]*?\n\});/)[1]+')',context);
+ const cfg=defaults(fs.readFileSync(root+'/js/tracking.js','utf8'));
  const pose=(x=0,y=0,z=-.5,rx=0,ry=0)=>new T.Matrix4().compose(new T.Vector3(x,y,z),new T.Quaternion().setFromEuler(new T.Euler(rx,ry,0)),new T.Vector3(1,1,1));
  const update=(f,m,id,at)=>f.update(m,1/60,at,{id,at});
  const base=pose();
@@ -49,8 +50,8 @@ const root=path.resolve(__dirname,'..');
  anchor.visible=false;anchor.onTargetUpdate();ui.render(300);assert(ui.active.stabilizer.held);
  anchor.visible=true;clock.now=400;anchor.onTargetUpdate();ui.render(400);assert(!ui.active.stabilizer.held);
  const pixel=(f)=>{const v=new T.Vector3(.4,.24,.04).applyMatrix4(new T.Matrix4().compose(f.position,f.quaternion,f.scale));return [600*v.x/-v.z,600*v.y/-v.z];};
- function simulate(C,hz,kind,render=60,seed0=123,baseline=false) {
-  const f=new C({...cfg,stillCutoff:baseline?.5:.25},.707),err=[];
+ function simulate(C,hz,kind,render=60,seed0=123,settings=cfg) {
+  const f=new C({...settings},.707),err=[];
   let observed=null,sample=null,id=0,next=0,seed=seed0;
   const noise=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return (seed/4294967296-.5)*2;};
   for(let frame=0;frame<render*8;frame++) {
@@ -63,17 +64,20 @@ const root=path.resolve(__dirname,'..');
   }
   return {rms:Math.sqrt(err.reduce((s,e)=>s+e*e,0)/err.length),max:Math.max(...err),filtered:[...(f._filteredP||f.position).toArray(),...(f._filteredQ||f.quaternion).toArray()]};
  }
- let Old=null;
+ let Old=null,oldCfg=null;
  const i=process.argv.indexOf('--baseline');
- if(i>=0){const src=cp.execFileSync('python3',['-c','import sys,zipfile;sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read("js/stabilizer.js"))',process.argv[i+1]],{encoding:'utf8'});Old=await load(src);}
+ if(i>=0){
+  const readZip=(name)=>cp.execFileSync('python3',['-c','import sys,zipfile;sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]))',process.argv[i+1],name],{encoding:'utf8'});
+  Old=await load(readZip('js/stabilizer.js'));oldCfg=defaults(readZip('js/tracking.js'));
+ }
  const results=[];
  for(const hz of [5,10,20])for(const kind of ['jitter','pan','slow','approach','turn']) {
   const seeds=kind==='jitter'?[1,123,2026]:[123];
-  const average=(C,baseline)=>{
-   const all=seeds.map(seed=>simulate(C,hz,kind,60,seed,baseline));
+  const average=(C,settings)=>{
+   const all=seeds.map(seed=>simulate(C,hz,kind,60,seed,settings));
    return {rms:all.reduce((s,x)=>s+x.rms,0)/all.length,max:Math.max(...all.map(x=>x.max))};
   };
-  const current=average(Filter,false),previous=Old?average(Old,true):null;
+  const current=average(Filter,cfg),previous=Old?average(Old,oldCfg):null;
   assert(current.rms<(kind==='pan'?16:kind==='slow'?6:kind==='jitter'?3:5),`${hz}Hz ${kind}: ${current.rms}`);
   if(previous&&kind==='jitter')assert(current.rms<previous.rms*.85,'異なるノイズ列でも静止中の揺れが減る');
   results.push({hz,kind,previous,current});
@@ -82,6 +86,13 @@ const root=path.resolve(__dirname,'..');
   const a=simulate(Filter,10,'jitter',60),b=simulate(Filter,10,'jitter',fps);
   a.filtered.forEach((v,i)=>assert(Math.abs(v-b.filtered[i])<1e-9,'認識回数が同じなら描画FPSに関係なく補正結果は同じ'));
  }
+ // 同じ静止補正Hzで閾値だけを変え、追加設定が実際の揺れの抑制に効くことを確認。
+ const thresholds=[1,2,3].map(motionThreshold=>{
+  const runs=[5,10,20].flatMap(hz=>[1,123,2026].map(seed=>simulate(Filter,hz,'jitter',60,seed,{...cfg,motionThreshold})));
+  return {motionThreshold,rms:runs.reduce((sum,x)=>sum+x.rms,0)/runs.length};
+ });
+ assert(thresholds[1].rms<thresholds[0].rms&&thresholds[2].rms<thresholds[1].rms,'閾値を上げると模擬静止入力の揺れが減る');
  console.log(JSON.stringify(results,null,2));
+ console.log(JSON.stringify({thresholds}));
  console.log('PASS: 静止ノイズ・横移動・低速移動・接近・旋回・一過性急変・同じ観測・実際の急変・見失い復帰・不正値・描画FPS独立性');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 // 読み込む順番に意味がある：tracking.js が先。MindAR の2つのファイルはどちらも window.MINDAR.IMAGE に
 // 部品を登録するが、tracking.js が使う側は丸ごと置き換え、下の three 用は追記する。逆順だと追記分が消える
-import { TRACKING_DEFAULTS, trackingStats, installTracking, addTrackingLevels, releaseTrackingLevels } from './tracking.js?rev=local-20261026';
+import { TRACKING_DEFAULTS, trackingStats, installTracking, addTrackingLevels, releaseTrackingLevels } from './tracking.js?rev=steady-20261027';
 import { ZOOM_PURPOSE, ZOOM_SIZES } from './trackpoints.js?rev=local-20261026';
 import { MindARThree } from '../lib/mindar/mindar-image-three.prod.js';
 import {
@@ -12,7 +12,7 @@ import {
 import { createPanel } from './panel.js';
 import { loadAnnotationData } from './annotations.js';
 import { fetchOptional, MIND_FILE } from './catalog.js';
-import { PoseStabilizer } from './stabilizer.js';
+import { PoseStabilizer } from './stabilizer.js?rev=steady-20261027';
 
 const $ = (id) => document.getElementById(id);
 const stage = $('stage');
@@ -46,7 +46,8 @@ function makeStage(target) {
   const root = new THREE.Group();                // なめらかにした姿勢。モデルはこちらに入れる
   root.visible = false;
   mindar.scene.add(root);
-  const st = { target, anchor, root, stabilizer: new PoseStabilizer(tracking), slots: [], usedAt: 0, toldTap: false };
+  const st = { target, anchor, root, stabilizer: new PoseStabilizer(tracking,target.heightPx/target.widthPx), slots: [], usedAt: 0, toldTap: false, sample: null, sampleId: 0 };
+  anchor.onTargetUpdate = () => { st.sample={id:++st.sampleId,at:performance.now()}; };
   anchor.onTargetFound = () => onFound(st);
   anchor.onTargetLost = () => onLost(st);
   return st;
@@ -228,7 +229,7 @@ function render(now) {
   lastRender = now;
   for (const st of stages) {
     const live = st.anchor.visible ? st.anchor.group.matrix : null;
-    st.stabilizer.update(live, dt, now);
+    st.stabilizer.update(live, dt, now, st.sample);
     st.root.visible = st === active && st.stabilizer.ready && st.slots.some((s) => s.model);
     if (st.root.visible) st.stabilizer.applyTo(st.root);
   }
@@ -278,6 +279,8 @@ function updateDebug(now) {
   const v = mindar.video;
   debugBox.textContent = [
     '局所追跡 2026-10-26',
+    '手ぶれ補正 2026-10-27',
+    `補正 ${active?.stabilizer.diagnostics.state || '待機'} / 急変等の除外 ${active?.stabilizer.diagnostics.rejected || 0}回`,
     `状態 ${t.state}${active && active.stabilizer.held ? '（固定表示）' : ''}`,
     `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,
     `手がかり ${t.points}点（表示中の最少 ${Number.isFinite(t.minPointsSeen) ? t.minPointsSeen : '-'}）`,
@@ -407,6 +410,7 @@ function checkMindFile() {
   catalog.targets.forEach((t, i) => {
     if (!dims[i]) return;
     const [w, h] = dims[i];
+    if (w>0 && h>0 && stages[i]) stages[i].stabilizer.aspect=h/w;
     if (Math.abs((h / w) / (t.heightPx / t.widthPx) - 1) > 0.01) {
       problems.push(`図面「${t.title || t.id}」：all.mind は ${w}×${h}、図面画像は ${t.widthPx}×${t.heightPx} で縦横比が違います`);
     }

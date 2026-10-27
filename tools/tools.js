@@ -1,6 +1,6 @@
 // 管理用：認識用データ（all.mind）の作成、資料ごとの位置合わせへの入口、QRコードと展示用シート
 import { Compiler } from '../lib/mindar/mindar-image.prod.js';
-import { extractDense, makeZoomLevels, toGray, ZOOM_PURPOSE } from '../js/trackpoints.js';
+import { extractDense, makeZoomLevels, toGray, ZOOM_PURPOSE } from '../js/trackpoints.js?rev=local-20261026';
 import { loadCatalogData, siteUrl, MIND_FILE } from '../js/catalog.js';
 import { loadAnnotationSources, glbBounds, collectUnits, matchDrawing } from '../js/annotations.js';
 

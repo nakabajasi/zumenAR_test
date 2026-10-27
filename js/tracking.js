@@ -19,6 +19,7 @@
 //         あわせて、直前の動きから次の位置を見込んでから探す（近いと1コマの動きが大きく見えるため）。
 import { Controller } from '../lib/mindar/mindar-image.prod.js';
 import { tiltTowardTop, tiltTowardSide, facing, planeTilt, planWindow, renderWindow, poseFromWindow } from './oblique.js';
+import { LocalTracker, hasSpread } from './local-tracker.js?rev=local-20261026';
 
 export const TRACKING_DEFAULTS = {
   minPoints: 6,        // 姿勢の更新に使う手がかりの最少数（MindAR既定は4。少ないと姿勢が暴れる）
@@ -37,6 +38,7 @@ export const TRACKING_DEFAULTS = {
   cameraLongSide: 0,   // カメラ映像の長辺の希望画素数（0＝ブラウザ任せ）。例：640
   detectOnly: 0,       // 検証用：1＝探すだけで追跡に入らない
   multiLevel: 1,       // 1＝近づいたら細かい見本に切り替える
+  localTracking: 1,    // 1＝画面内の点を選び、細かい段も試す。0＝この2処理の比較用
   levelRatio: 3,       // 見本1画素に映像の何画素が対応するのがよいか。大きいと速い動きに強いが、細い線を拾えなくなる
   predict: 1,          // 1＝速く動かしているときは、直前の動き（画面の上での横・縦のずれ）から次の位置を見込んで探す
   stallMs: 3000,       // 1コマの処理がこの時間を超えたら、止まったとみなして追跡を作り直す
@@ -51,12 +53,18 @@ export function addTrackingLevels(targetIndex, keyframes) {
   levelsVersion += 1;
 }
 
+export function releaseTrackingLevels(controller) {
+  for (const list of controller?.__levels?.levels || []) for (const lv of list) if (lv.own) disposeTracker(lv.own);
+  if (controller) controller.__levels=null;
+}
+
 // 状態の記録（?debug=1 の表示と検証に使う）
 export const trackingStats = {
   frames: 0, fps: 0, points: 0, used: 0, minPointsSeen: Infinity,
   state: '待機', detections: 0, fallbacks: 0, rejected: 0, lost: 0,
   tries: {}, hits: {},   // 探し方ごとの試行回数と成功回数（正面＝MindAR既定、傾50＝傾き50°を仮定、前回＝最後に追跡できた向き）
-  level: '', levels: '', retries: 0, tryLog: [], px: 0,   // いま使っている見本の細かさ（短辺の画素数）、持っている見本、やり直した回数
+  level: '', levels: '', retries: 0, tryLog: [], px: 0,
+  localCandidates: 0, localVisible: 0, localRegistered: 0, lastPoseAt: null,
   lastWay: '', lastPose: null,
   errors: 0, errorStreak: 0, lastError: '', lastFrameAt: 0, _t0: 0, _n: 0,
 };
@@ -96,9 +104,11 @@ export function installTracking(cfg) {
     if (this.processingVideo) return;
     this.processingVideo = true;
     const token = ++runToken;
+    const active = () => this.processingVideo && token === runToken;
+    const minPoints = Math.max(6, Math.ceil(Number(cfg.minPoints) || 6));
     const states = this.markerDimensions.map(() => ({
       showing: false, isTracking: false, locked: false, currentModelViewTransform: null, trackCount: 0, lastGoodAt: 0, failStreak: 0,
-      level: -1, motion: null, goodFrame: -10, lastGoodT: null, resuming: false,
+      level: -1, levelUntil: 0, motion: null, goodFrame: -10, lastGoodT: null, resuming: false,
     }));
     let frameNo = 0;
 
@@ -114,23 +124,33 @@ export function installTracking(cfg) {
         stats.levels = levels.map((l) => l.map((lv) => lv.size).join('/')).join(' ');
         return;
       }
-      for (const list of (cache && cache.levels) || []) for (const lv of list) if (lv.own) disposeTracker(lv.own);
+      const oldLevels = cache && cache.tracker === this.tracker ? cache.levels : [];
+      const retained = new Set();
       levels = this.markerDimensions.map((dims, i) => {
         const data = this.tracker.trackingDataList[i];
         const std = data[1] || data[0];
         const out = [{ size: Math.min(std.width, std.height), scale: std.scale, track: (inputT, T) => this.tracker.track(inputT, T, i) }];
         if (!cfg.multiLevel) return out;
-        const finer = [...data, ...(extraLevels.get(i) || [])]
-          .filter((k) => k !== std && k.width > std.width * 1.4 && k.points.length >= 30)
-          .sort((a, b) => a.width - b.width);
+        // 同じ段は後から届いた見本を優先。追加のたびに他の段のGPU準備をやり直さない。
+        const byWidth = new Map();
+        for (const k of [...data, ...(extraLevels.get(i) || [])]) {
+          if (k !== std && k.width > std.width * 1.4 && k.points.length >= 6) byWidth.set(k.width,k);
+        }
+        const finer = [...byWidth.values()].sort((a,b)=>a.width-b.width);
         for (const k of finer) {
           if (out.length && k.width < out[out.length - 1].width * 1.4) continue; // 細かさがほぼ同じ段は1つにする
-          const t = new Tracker([dims], [[k, k]], K, this.inputWidth, this.inputHeight);
-          out.push({ size: Math.min(k.width, k.height), width: k.width, scale: k.scale, own: t, warm: false, track: (inputT, T) => t.track(inputT, T, 0) });
+          const previous = (oldLevels[i] || []).find(lv=>lv.frame===k);
+          if (previous) {out.push(previous);retained.add(previous.own);continue;}
+          const local = cfg.localTracking && window.MINDAR?.IMAGE?.tf;
+          const t = local
+            ? new LocalTracker(Tracker,dims,k,K,this.inputWidth,this.inputHeight,window.MINDAR.IMAGE.tf)
+            : new Tracker([dims], [[k, k]], K, this.inputWidth, this.inputHeight);
+          out.push({ frame:k, size: Math.min(k.width, k.height), width: k.width, scale: k.scale, own: t, warm: false, track: (inputT, T) => t.track(inputT, T, 0) });
         }
         out[0].width = std.width;
         return out;
       });
+      for (const list of (cache && cache.levels) || []) for (const lv of list) if (lv.own && !retained.has(lv.own)) disposeTracker(lv.own);
       builtVersion = levelsVersion;
       this.__levels = { version: levelsVersion, tracker: this.tracker, levels };
       stats.levels = levels.map((l) => l.map((lv) => lv.size).join('/')).join(' ');
@@ -171,27 +191,31 @@ export function installTracking(cfg) {
     // 1つの段で、姿勢 T のまわりに図面の目印を探す
     const trackAt = (i, k, inputT, T) => {
       const lv = levels[i][k];
-      if (lv.own && !lv.warm) { lv.own.dummyRun(inputT); lv.warm = true; } // 初めて使う段は、計算の準備を先に済ませる
-      const { worldCoords, screenCoords } = lv.track(inputT, T);
-      const used = cfg.rejectOutliers ? consistentPoints(this.projectionTransform, T, worldCoords, screenCoords) : { worldCoords, screenCoords };
-      return { used, raw: worldCoords.length, T, k };
+      const result = lv.track(inputT, T);
+      lv.warm = true; // 初使用のコマでdummyRunと本番を二重に実行しない。
+      const { worldCoords, screenCoords } = result;
+      let used = cfg.rejectOutliers ? consistentPoints(this.projectionTransform, T, worldCoords, screenCoords) : { worldCoords, screenCoords };
+      if (cfg.localTracking && !hasSpread(used.screenCoords,this.inputWidth,this.inputHeight)) used={worldCoords:[],screenCoords:[]};
+      return { used, raw: worldCoords.length, T, k, candidates:result.candidates || 0, visible:result.visible || 0, registered:result.registered || 0 };
     };
 
     // 見つけたばかりの姿勢（または最後に追えていた姿勢）を、粗い段から順に追い込む。
     // 近くで見ているときに探して得た姿勢は数十画素ずれていることがあり、細かい段では一度に合わせきれない
     const settle = async (i, inputT, T0, need) => {
-      let T = T0, k = -1, last = null;
-      for (let n = 0; n < 3; n++) {
-        const pick = pickLevel(i, T);
-        k = n === 0 ? Math.max(0, pick - 1) : pick;
+      let T = T0, last = null;
+      const pick = pickLevel(i,T);
+      const steps = [...new Set([Math.max(0,pick-1),pick,...(cfg.localTracking ? [pick+1,pick+2] : [])])].filter(k=>k<levels[i].length);
+      for (let n = 0; n < steps.length; n++) {
+        const k = steps[n];
         const r = trackAt(i, k, inputT, T);
         stats.tryLog = [...(n ? stats.tryLog : []), `${levels[i][k].size}合:${r.raw}/${r.used.worldCoords.length}`];
-        if (r.used.worldCoords.length < need) break;
+        if (r.used.worldCoords.length < need) continue;
         const next = await this._workerTrackUpdate(T, r.used);
-        if (!next) break;
+        if (!active()) return null;
+        if (!next) continue;
         last = { ...r, next };
         T = next;
-        if (n >= 1 && k === pick) break;   // 選んだ段で合ったら終わり
+        if (k >= pickLevel(i,T)) break;
       }
       return last;
     };
@@ -230,6 +254,7 @@ export function installTracking(cfg) {
     };
     this.trackingStates = states;
     stats._t0 = performance.now(); stats._n = 0; stats.errorStreak = 0; stats.lastFrameAt = performance.now();
+    stats.lastPoseAt = null;
     let detectTurn = 0;
     let lastNormal = null;   // 最後に追跡できていたときの図面の向き（斜めのときだけ覚える）
     let scratch = null;
@@ -274,16 +299,19 @@ export function installTracking(cfg) {
     };
 
     const emit = (i, transform) => {
+      if (!active()) return;
       let worldMatrix = null;
       if (transform) {
         worldMatrix = [...this._glModelViewMatrix(transform, i)];
         if (input.width === this.inputHeight && input.height === this.inputWidth) worldMatrix = this.getRotatedZ90Matrix(worldMatrix);
+        stats.lastPoseAt = performance.now();
       }
       this.onUpdate && this.onUpdate({ type: 'updateMatrix', targetIndex: i, worldMatrix });
     };
 
     const step = async (inputT) => {
       frameNo += 1;
+      stats.points=0;stats.used=0;stats.localCandidates=0;stats.localVisible=0;stats.localRegistered=0;
       if (builtVersion !== levelsVersion || !levels) buildLevels();
       if (!states.some((s) => s.isTracking)) warmOne(inputT);
       // 図面を探す（追跡中の図面が上限に達していないときだけ）
@@ -306,6 +334,7 @@ export function installTracking(cfg) {
           : view
             ? await searchOblique(view, candidates)
             : await this._detectAndMatch(inputT, candidates);
+        if (!active()) return;
         stats.tries[way] = (stats.tries[way] || 0) + 1;
         if (targetIndex !== -1) {
           if (!tryResume) { stats.hits[way] = (stats.hits[way] || 0) + 1; stats.detections += 1; }
@@ -313,7 +342,7 @@ export function installTracking(cfg) {
           if (!cfg.detectOnly) {
             const s = states[targetIndex];
             s.isTracking = true; s.locked = false; s.currentModelViewTransform = modelViewTransform; s.failStreak = 0;
-            s.level = -1; s.motion = null; s.resuming = tryResume;   // 見つけた姿勢の大きさから段を選び直す
+            s.level = -1; s.levelUntil = 0; s.motion = null; s.resuming = tryResume;
           }
         }
       }
@@ -323,16 +352,17 @@ export function installTracking(cfg) {
         let good = false;
 
         if (s.isTracking) {
-          // 表示中は多めの手がかりを求める（揺れを抑える）。表示前は MindAR 既定の4点で受け付ける（早く復帰する）
-          const need = s.showing ? cfg.minPoints : Math.min(cfg.minPoints, 4);
+          // 部分画像の4点だけで初期姿勢を確定させない。開始・継続とも6点以上。
+          const need = minPoints;
           const list = levels[i];
           let best = null, next = null;
           if (!s.locked) {
             // 見つけたばかり：粗い段から順に追い込む
             best = await settle(i, inputT, s.currentModelViewTransform, need);
+            if (!active()) return;
             if (best) { next = best.next; s.level = best.k; if (s.resuming) stats.hits['直前の位置'] = (stats.hits['直前の位置'] || 0) + 1; }
           } else {
-            s.level = pickLevel(i, s.currentModelViewTransform, s.level);
+            if (frameNo >= s.levelUntil) s.level = pickLevel(i, s.currentModelViewTransform, s.level);
             // 速く動かしているとき（直前の動きが探す範囲の3割を超える）は、動きを見込んだ位置から先に探す。
             // 手を止めているときに見込むと、手の震えを大きくするだけなので、見込みは失敗したときの予備にする
             const guess = predicted(s);
@@ -341,28 +371,39 @@ export function installTracking(cfg) {
             if (fast) tries.push([s.level, guess]);
             tries.push([s.level, s.currentModelViewTransform]);
             if (guess && !fast) tries.push([s.level, guess]);
+            if (cfg.localTracking) {
+              if (s.level+1<list.length) tries.push([s.level+1,guess || s.currentModelViewTransform]);
+              if (s.level+2<list.length) tries.push([s.level+2,guess || s.currentModelViewTransform]);
+            }
             if (s.level > 0) tries.push([s.level - 1, guess || s.currentModelViewTransform]);
             for (let n = 0; n < tries.length; n++) {
               const r = trackAt(i, tries[n][0], inputT, tries[n][1]);
               stats.tryLog = [...(n ? stats.tryLog : []), `${list[r.k].size}${r.T === guess ? '予' : ''}:${r.raw}/${r.used.worldCoords.length}`];
               if (!best || r.used.worldCoords.length > best.used.worldCoords.length) best = r;
-              if (r.used.worldCoords.length >= need) break;
+              if (r.used.worldCoords.length >= need) {
+                const candidate = await this._workerTrackUpdate(r.T,r.used);
+                if (!active()) return;
+                if (candidate) {best=r;next=candidate;break;}
+              }
               if (n + 1 < tries.length) stats.retries += 1;
             }
-            if (best.used.worldCoords.length >= need) next = await this._workerTrackUpdate(best.T, best.used);
           }
           if (best) {
             stats.points = best.raw; stats.used = best.used.worldCoords.length; stats.level = list[best.k].size;
+            stats.localCandidates=best.candidates;stats.localVisible=best.visible;stats.localRegistered=best.registered;
             if (s.showing) stats.minPointsSeen = Math.min(stats.minPointsSeen, best.raw);
           } else { stats.points = 0; stats.used = 0; }
           s.resuming = false;
           if (next) {
+            if (best.k !== s.level) s.levelUntil = frameNo + 8;
+            s.level = best.k; // 実際に追えた段を短時間維持し、失敗した粗い段へ毎コマ戻らない。
             // 1コマあたりの動きを覚える（失敗したコマを挟んだときは、その数で割る）
             const gap = frameNo - s.goodFrame;
             s.motion = s.locked && gap >= 1 && gap <= 2 ? centerMotion(i, s.currentModelViewTransform, next).map((v) => v / gap) : null;
             s.goodFrame = frameNo;
             s.currentModelViewTransform = next; s.failStreak = 0; s.locked = true; good = true;
             s.lastGoodT = next;
+            s.lastGoodAt = performance.now();
             const tilt = planeTilt(next);
             lastNormal = tilt.deg > 25 ? tilt.normal : null;   // 正面に近ければ、既定の探し方で足りる
           } else if (!s.locked) {
@@ -376,7 +417,7 @@ export function installTracking(cfg) {
 
         if (!s.showing) {
           s.trackCount = good ? s.trackCount + 1 : 0;
-          if (s.trackCount > this.warmupTolerance) { s.showing = true; s.lastGoodAt = performance.now(); }
+          if (s.trackCount >= Math.max(1,this.warmupTolerance)) { s.showing = true; s.lastGoodAt = performance.now(); }
         }
         if (s.showing) {
           const t = performance.now();
@@ -391,8 +432,8 @@ export function installTracking(cfg) {
         }
       }
 
-      const active = states.find((s) => s.showing);
-      stats.state = active ? (active.failStreak ? '粘り中' : '追跡中') : (states.some((s) => s.isTracking) ? '確認中' : '探索中');
+      const activeState = states.find((s) => s.showing);
+      stats.state = activeState ? (activeState.failStreak ? '粘り中' : '追跡中') : (states.some((s) => s.isTracking) ? '確認中' : '探索中');
     };
 
     const run = async () => {
@@ -401,13 +442,16 @@ export function installTracking(cfg) {
         try {
           inputT = this.inputLoader.loadInput(input);
           await step(inputT);
-          stats.errorStreak = 0;
+          if (active()) stats.errorStreak = 0;
         } catch (err) {
           // 1コマの失敗で処理全体が止まらないようにする（止まると再読み込みするまで復帰しない）
-          stats.errors += 1; stats.errorStreak += 1; stats.lastError = String((err && err.message) || err);
-          states.forEach((s) => { s.isTracking = false; s.locked = false; s.failStreak = 0; });
+          if (active()) {
+            stats.errors += 1; stats.errorStreak += 1; stats.lastError = String((err && err.message) || err);
+            states.forEach((s) => { s.isTracking = false; s.locked = false; s.failStreak = 0; });
+          }
         }
         try { if (inputT) inputT.dispose(); } catch (err) { /* 描画面が失われたときは破棄も失敗する */ }
+        if (!active()) return;
         stats.frames += 1; stats._n += 1;
         const now = performance.now();
         stats.lastFrameAt = now;
@@ -416,7 +460,7 @@ export function installTracking(cfg) {
         await nextFrame();
       }
     };
-    run();
+    this._trackingRunPromise = run();
   };
 }
 
@@ -425,7 +469,7 @@ export function installTracking(cfg) {
 // 1コマの間の動きは小さいので、手がかりの「前の姿勢からのずれ」は図面全体でなめらかに変わるはず。
 // 全体の傾向（位置に対する一次式）から大きく外れた手がかりは、別の場所と取り違えたものとして捨てる。
 // MindAR は合った手がかりをすべて同じ重みで使うので、取り違えが混じると姿勢が傾いたまま戻らないことがある
-function consistentPoints(K, T, worldCoords, screenCoords) {
+export function consistentPoints(K, T, worldCoords, screenCoords) {
   const n = worldCoords.length;
   if (n < 8) return { worldCoords, screenCoords };
   const P = [0, 1, 2].map((r) => [0, 1, 3].map((c) => K[r][0] * T[0][c] + K[r][1] * T[1][c] + K[r][2] * T[2][c]));
@@ -492,6 +536,7 @@ function shiftPose(P, dx, dy, K) {
 
 // 足した見本の追跡器が持つ計算用のデータを捨てる（MindAR の追跡器には捨てる処理がない）
 function disposeTracker(t) {
+  if (typeof t.dispose === 'function') { t.dispose(); return; }
   for (const key of ['featurePointsListT', 'imagePixelsListT', 'imagePropertiesListT']) {
     for (const x of t[key] || []) { try { x.dispose(); } catch (err) { /* すでに捨ててある */ } }
   }

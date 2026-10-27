@@ -112,8 +112,8 @@ export function extractDense(image, { spacing = 7, candidateRatio = 0.08 } = {})
 // 見本の形は MindAR の追跡データと同じ（data・width・height・scale・points）。all.mind の追跡データの後ろに足しても、
 // MindAR 標準の動きは変わらない（標準は2番目の見本だけを使う）。
 
-export const ZOOM_SIZES = [256, 384, 576, 864];   // 見本の短辺の画素数。標準（128）の 2・3・4.5・6.75 倍
-export const ZOOM_PURPOSE = 'zoom-v2';
+export const ZOOM_SIZES = [256, 384, 576, 864, 1296];
+export const ZOOM_PURPOSE = 'zoom-v3-local';
 
 // 灰色の図面画像（gray：0〜255、width×height）を、短辺 L 画素に平均で縮める（MindAR の縮め方と同じ考え方）
 export function shrink(gray, width, height, L) {
@@ -146,11 +146,18 @@ export function toGray(rgba, width, height) {
 }
 
 // 細かい見本を作る。sizes の順（粗い順）に作り、1つできるたびに onLevel に渡す
-export function makeZoomLevels(gray, width, height, { sizes = ZOOM_SIZES, onLevel } = {}) {
+export function makeZoomLevels(gray, width, height, { sizes = ZOOM_SIZES, onLevel, targetWidth = width, targetHeight = height } = {}) {
+  if (!(targetWidth>0&&targetHeight>0) || Math.abs((width/height)/(targetWidth/targetHeight)-1)>0.01) {
+    throw new Error('図面画像とall.mindの縦横比が違います。認識データを作り直してください');
+  }
   const out = [];
   for (const L of sizes) {
-    const level = shrink(gray, width, height, L);
-    level.points = extractDense(level);
+    const actual=Math.min(L,Math.min(width,height));
+    if (out.some(k=>Math.min(k.width,k.height)===actual)) continue;
+    const level = shrink(gray, width, height, actual);
+    // 元画像とmindの解像度が違っていても、座標の単位はmindに合わせる。
+    level.scale *= width/targetWidth;
+    level.points = extractDense(level, { spacing: 4 });
     level.purpose = ZOOM_PURPOSE;
     out.push(level);
     if (onLevel) onLevel(level);

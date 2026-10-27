@@ -2,8 +2,8 @@
 import * as THREE from 'three';
 // 読み込む順番に意味がある：tracking.js が先。MindAR の2つのファイルはどちらも window.MINDAR.IMAGE に
 // 部品を登録するが、tracking.js が使う側は丸ごと置き換え、下の three 用は追記する。逆順だと追記分が消える
-import { TRACKING_DEFAULTS, trackingStats, installTracking, addTrackingLevels } from './tracking.js';
-import { ZOOM_PURPOSE, ZOOM_SIZES } from './trackpoints.js';
+import { TRACKING_DEFAULTS, trackingStats, installTracking, addTrackingLevels, releaseTrackingLevels } from './tracking.js?rev=local-20261026';
+import { ZOOM_PURPOSE, ZOOM_SIZES } from './trackpoints.js?rev=local-20261026';
 import { MindARThree } from '../lib/mindar/mindar-image-three.prod.js';
 import {
   url, loadCatalog, itemFromQuery, targetFromQuery, fetchJson, isInAppBrowser, loadItemObject, addLights,
@@ -19,8 +19,8 @@ const stage = $('stage');
 const hint = $('hint');
 const showHint = (text) => { hint.textContent = text || ''; hint.hidden = !text; };
 // 図面は近いほど見つけやすい（擬似映像での成功率：画面いっぱい約9割、画面幅の半分では約3割）
-const SCAN_HINT = '図面が画面いっぱいになるように近づけてください';
-const HOLD_HINT = '図面を見失いました。図面を画面いっぱいに映すと再開します';
+const SCAN_HINT = 'まず図面の広い範囲を映し、認識後はゆっくり近づけてください';
+const HOLD_HINT = '図面を見失いました。少し離れて図柄の多い範囲を映し直してください';
 
 const MAX_LOADED = 6;     // 同時に持つモデルの数の上限（iPhoneのメモリ不足を避ける）。いま見ている図面の分は必ず持つ
 
@@ -277,9 +277,12 @@ function updateDebug(now) {
   const t = trackingStats;
   const v = mindar.video;
   debugBox.textContent = [
+    '局所追跡 2026-10-26',
     `状態 ${t.state}${active && active.stabilizer.held ? '（固定表示）' : ''}`,
     `認識 ${t.fps.toFixed(1)}回/秒  描画 ${renderFps.toFixed(0)}回/秒`,
     `手がかり ${t.points}点（表示中の最少 ${Number.isFinite(t.minPointsSeen) ? t.minPointsSeen : '-'}）`,
+    `採用 ${t.used}点 / 局所候補 ${t.localCandidates}点（視野内 ${t.localVisible} / 登録 ${t.localRegistered}）`,
+    `最終姿勢から ${t.lastPoseAt == null ? '-' : Math.round(now-t.lastPoseAt)}ms`,
     `見本 ${t.level || '-'}（持っている段 ${t.levels || '-'}）  やり直し ${t.retries}`,
     `直近の試し ${(t.tryLog || []).join(' ')}`,
     `発見 ${t.detections}  却下 ${t.rejected}`,
@@ -306,6 +309,7 @@ async function restart() {
   mindar.renderer.setAnimationLoop(null);
   try {
     mindar.stop();
+    releaseTrackingLevels(mindar.controller);
     stages.forEach((st) => { st.stabilizer.reset(); st.anchor.visible = false; }); // 前の姿勢は捨てる
     await mindar.start();
     trackingStats.errorStreak = 0; trackingStats.lastFrameAt = performance.now();
@@ -333,7 +337,7 @@ async function start(preferredTarget) {
 
   mindar = new MindARThree({
     container: stage,
-    imageTargetSrc: url(MIND_FILE),
+    imageTargetSrc: url(MIND_FILE) + '?rev=local-20261026',
     maxTrack: 1,
     uiLoading: 'no', uiScanning: 'no', uiError: 'no',
     warmupTolerance: tracking.warmupTolerance,
@@ -381,14 +385,15 @@ function prepareZoomLevels() {
   catalog.targets.forEach((t, i) => {
     if (!lists[i] || lists[i].some((k) => k.purpose === ZOOM_PURPOSE)) return;
     let worker;
-    try { worker = new Worker(new URL('./levels-worker.js', import.meta.url), { type: 'module' }); } catch (err) { console.warn('細かい見本を作れません', err); return; }
+    try { worker = new Worker(new URL('./levels-worker.js?rev=local-20261026', import.meta.url), { type: 'module' }); } catch (err) { console.warn('細かい見本を作れません', err); return; }
     worker.onmessage = (e) => {
       const m = e.data;
       if (m.level) addTrackingLevels(m.targetIndex, [m.level]);
       if (m.error) console.warn(`細かい見本を作れません：${m.error}`);
       if (m.done || m.error) { if (m.done) console.info(`図面「${t.id}」の細かい見本を作りました（${m.ms}ms）`); worker.terminate(); }
     };
-    worker.postMessage({ url: url(t.source), targetIndex: i, sizes: ZOOM_SIZES });
+    const [targetWidth,targetHeight] = mindar.controller.markerDimensions[i];
+    worker.postMessage({ url: url(t.source), targetIndex: i, sizes: ZOOM_SIZES, targetWidth, targetHeight });
   });
 }
 
